@@ -1,52 +1,18 @@
+import type { WAMessage } from '@whiskeysockets/baileys'
 import type { SupportedLanguage } from './utils'
 
 export type MessageDirection = 'inbound' | 'outbound'
 export type MessageType = 'text' | 'document' | 'image' | 'audio' | 'unsupported'
 
-export interface WassengerMedia {
-  id?: string
-  mime?: string
-  mimetype?: string
-  type?: string
-  filename?: string
-  name?: string
-  size?: number
-  links?: { download?: string }
-}
-
-export interface WassengerInboundMessage {
-  id?: string
-  waId?: string
-  type?: string
-  body?: string
-  caption?: string
-  fromNumber?: string
-  date?: string
-  createdAt?: string
-  media?: WassengerMedia
-  chat?: {
-    id?: string
-    type?: string
-    fromNumber?: string
-    contact?: {
-      name?: string
-      displayName?: string
-      phone?: string
-    }
-  }
-}
-
-export interface WassengerWebhook {
-  id?: string
-  event?: string
-  device?: { id?: string; phone?: string }
-  data?: WassengerInboundMessage
+export interface BaileysDocumentMedia {
+  mimeType?: string | null
+  filename?: string | null
+  size?: unknown
 }
 
 export interface NormalizedInboundMessage {
   eventId: string
   externalMessageId: string
-  deviceId?: string
   conversationExternalId: string
   phoneNumber: string
   displayName?: string
@@ -54,8 +20,8 @@ export interface NormalizedInboundMessage {
   type: MessageType
   body: string
   timestamp: string
-  media?: WassengerMedia
-  raw: WassengerWebhook
+  media?: BaileysDocumentMedia
+  raw: WAMessage
 }
 
 export interface StoredMessage {

@@ -1,141 +1,119 @@
-# محرك بوت دعم واتساب
+# محرك دعم WhatsApp عبر Baileys
 
-## الغرض وحدود البنية
+## الغرض والبنية
 
-يحتوي هذا المستودع الآن على مسارين متكاملين لكن مستقلين. يبقى تطبيق Next.js القائم لوحة إدارة تتصل بخدمة BerryLabs كما كان، بينما يضيف `src/engine` خدمة Node.js مستقلة لمعالجة رسائل واتساب الواردة عبر Wassenger، والرد باستخدام Gemini، وحفظ الذاكرة والمعرفة في Supabase. لم تُستبدل لوحة الإدارة ولم تُحذف واجهاتها أو نماذج Prisma الحالية.
+يبقى تطبيق Next.js القائم منفصلًا كما هو، بينما يشغّل `src/engine` عملية Node.js مستقلة تتصل مباشرةً بـ WhatsApp Web عبر Baileys. تستقبل العملية الرسالة، تحفظ الذاكرة وقاعدة المعرفة في Supabase، ثم تستخدم Gemini 2.5 Flash لإعداد الرد، وتحفظه وتعيده في المحادثة نفسها. لا يحتاج هذا المسار إلى Wassenger أو Vercel Relay أو واجهة WhatsApp مدفوعة.
 
-> **القرار المعماري:** المحرك الجديد لا يعتمد على ذاكرة العملية أو جلسة متصفح واتساب. إنه يستقبل webhooks من Wassenger، ولذلك يتطلب عنوان HTTPS ثابتًا عند النشر وتشغيلًا مستمرًا.
-
-| العنصر | المسؤولية |
-| --- | --- |
-| `src/engine/server.ts` | نقطة ويبهوك محمية، حد معدل الطلبات، وإقرار سريع للأحداث. |
-| `src/engine/processor.ts` | منع التكرار، حفظ الرسائل، اللغة، الاسترجاع، الاستدعاء، والإرسال. |
-| `src/engine/gemini.ts` | استخدام SDK `@google/genai` وخيار `gemini-2.5-flash` على الخادم فقط. |
-| `src/engine/repository.ts` | ذاكرة المحادثات، الوثائق، قاعدة المعرفة، وسجل idempotency في Supabase. |
-| `src/engine/documents.ts` | فحص الحجم والتوقيع واستخراج PDF وDOC وDOCX وحذف المؤقتات. |
-| `supabase/migrations/20260815_001_bot_engine.sql` | إنشاء الجداول والفهارس وRLS. |
-
-## تدفق الرسالة
-
-ينفذ المحرك التدفق التالي لكل حدث وارد: يتحقق من سر الويبهوك، ثم يسجل `external_event_id` مرة واحدة. بعد ذلك ينشئ أو يحمّل المستخدم والمحادثة، ويستنتج اللغة مع المحافظة على لغة المحادثة السابقة، ويحفظ الرسالة. بالنسبة للمستندات، يتحقق من الحجم والتوقيع الفعلي قبل استخراج النص. بعدها يجلب نافذة صغيرة من الرسائل السابقة وبحثًا نصيًا محدودًا من قاعدة المعرفة، ويغلف كل ذلك كسياق غير موثوق قبل إرسال الطلب إلى Gemini. وأخيرًا يتحقق من الرد، يحفظه، ويرسله عبر Wassenger.
+> Baileys مكتبة مجتمع تتصل عبر WebSocket بواجهة WhatsApp Web، وليست واجهة WhatsApp Business الرسمية. استخدمها بشكل مسؤول ووفق سياسات WhatsApp؛ وثائقها نفسها تحذر من الممارسات المخالفة للشروط أو الإرسال المزعج. [1]
 
 ```text
-Wassenger webhook
-  -> signature + rate-limit + idempotency
-  -> user / conversation / message in Supabase
-  -> optional PDF/DOC/DOCX text extraction
-  -> recent messages + knowledge-base search
-  -> Gemini 2.5 Flash
-  -> response validation
-  -> Supabase outbound message + Wassenger reply
+WhatsApp
+  -> Baileys WebSocket
+  -> wa-engine
+     -> Supabase: auth state + memory + knowledge base
+     -> Gemini 2.5 Flash
+  -> Baileys reply
 ```
 
-## المتطلبات
-
-تحتاج إلى Node.js 20 أو أحدث، وحساب Supabase، ومفتاح Gemini Server-side، وحساب Wassenger به رقم واتساب عامل. تدعم Wassenger إرسال واستقبال الرسائل والـ webhooks الفورية؛ يجب إعداد الويبهوك من لوحة Wassenger أو واجهتها ليشير إلى الخدمة المنشورة. [1]
-
-| المتطلب | القيمة أو الإجراء |
+| المكوّن | المسؤولية |
 | --- | --- |
-| Node.js | `>=20`، مع Node.js 22 أو أحدث إذا انتقلت إلى الإصدار 3 من SDK مستقبلًا. |
-| قاعدة البيانات | مشروع Supabase واحد لكل بيئة. |
-| Gemini | مفتاح من Google AI Studio وحفظه في `GEMINI_API_KEY` فقط. |
-| WhatsApp | جهاز/رقم متصل في Wassenger ومفتاح API له. |
-| عنوان عام | HTTPS ثابت يمكن أن يصل إليه Wassenger، مثل `https://bot.example.com/webhooks/wassenger`. |
+| `src/engine/baileys-client.ts` | الاتصال، QR محلي، إعادة الاتصال، الإرسال، حالة الكتابة، ومنع `fromMe` loops. |
+| `src/engine/supabase-auth-state.ts` | تحميل وحفظ `creds` وSignal keys بعد تشفيرها. |
+| `src/engine/auth-crypto.ts` | تشفير وفك تشفير AES-256-GCM محليًا. |
+| `src/engine/baileys-session-repository.ts` | الوصول الخادمي فقط إلى جدولي session الجديدين. |
+| `src/engine/processor.ts` | تطبيع الرسائل، منع التكرار، اللغة، الذاكرة، Gemini، وحفظ الرسائل. |
+| `src/engine/documents.ts` | تنزيل PDF وDOC وDOCX والتحقق من التوقيع والحجم واستخراج النص. |
+| `src/engine/server.ts` | `GET /health` و`GET /whatsapp/status` فقط؛ لا توجد نقطة webhook للإرسال. |
 
-## الإعداد المحلي
+## المتطلبات والإعداد المحلي
 
-انسخ ملف المثال ولا تضف ملف `.env` إلى Git. يستخدم المستودع `pnpm-lock.yaml`، لذلك الأمر المفضل هو `pnpm install`. كما يمكن استعمال `npm install` عند الحاجة، لكن يجب اختيار مدير حزم واحد للفريق لتجنب اختلاف ملفات القفل.
+يتطلب المحرك Node.js من 20 إلى أقل من 23، وقد ثُبِّت هذا النطاق في `package.json`. يتطلب Baileys Node.js 20 أو أحدث. [1] انسخ ملف البيئة ولا تضع ملف `.env` أو أي قيم فعلية في Git.
 
 ```bash
 cp .env.example .env
 pnpm install
-pnpm bot:start
+pnpm run bot:build
+pnpm run bot:start
 ```
 
-أضف قيم Supabase وGemini وWassenger الحقيقية إلى `.env`. في التطوير يمكن ترك `NODE_ENV=development`، لكن يجب تعيين `NODE_ENV=production` و`WEBHOOK_SHARED_SECRET` طويل وعشوائي في الإنتاج. لا تضع أي مفتاح تحت متغير يبدأ بـ `NEXT_PUBLIC_`.
+يتطلب `BAILEYS_AUTH_ENCRYPTION_KEY` قيمة base64 تمثل 32 بايت. أنشئها محليًا مرة واحدة، وخزّنها في مدير أسرار بيئة النشر نفسه؛ تغييرها بعد ربط الحساب يجعل حالة المصادقة المحفوظة غير قابلة للقراءة، وعندها يجب مسح حالة الجلسة وإعادة مسح QR.
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
 
 | المتغير | مطلوب | الاستخدام |
 | --- | --- | --- |
-| `GEMINI_API_KEY` | نعم | مصادقة Gemini على الخادم. |
-| `GEMINI_MODEL` | نعم | القيمة الافتراضية `gemini-2.5-flash`. |
+| `GEMINI_API_KEY` | نعم | مفتاح Gemini الخادمي فقط. |
+| `GEMINI_MODEL` | نعم | الافتراضي `gemini-2.5-flash`. |
 | `SUPABASE_URL` | نعم | عنوان مشروع Supabase. |
-| `SUPABASE_SERVICE_ROLE_KEY` | نعم | صلاحية خادمية فقط؛ لا تُكشف للمتصفح. |
-| `WASSENGER_API_KEY` | نعم | مصادقة API الإرسال والتنزيل. |
-| `WASSENGER_DEVICE_ID` | مستحسن | يقيّد الإرسال إلى الرقم المقصود. |
-| `WEBHOOK_SHARED_SECRET` | إلزامي في الإنتاج | يطابق ترويسة `x-webhook-secret` التي تضبطها في Wassenger. |
-| `ENABLE_GROUP_REPLY` | لا | اتركه `false` لحظر الردود على المجموعات افتراضيًا. |
-| `MAX_HISTORY_MESSAGES` | لا | حجم نافذة الذاكرة؛ الافتراضي 12. |
+| `SUPABASE_SERVICE_ROLE_KEY` | نعم | مفتاح خادمي فقط؛ لا يوضع في متغير `NEXT_PUBLIC_*`. |
+| `BAILEYS_AUTH_ENCRYPTION_KEY` | نعم | مفتاح base64 بطول 32 بايت لتشفير الاعتماد قبل Supabase. |
+| `BAILEYS_ACCOUNT_ID` | لا | معرّف حساب معزول؛ الافتراضي `default`. |
+| `BAILEYS_RECONNECT_DELAY_MS` | لا | تأخير إعادة الاتصال الآمن؛ الافتراضي 5000. |
+| `ENABLE_GROUP_REPLY` | لا | اتركه `false` لمنع الردود في المجموعات افتراضيًا. |
 | `MAX_FILE_SIZE` | لا | حد الملف بالبايت؛ الافتراضي 8 MiB. |
 
-## إعداد Supabase
+## Supabase وحالة الجلسة
 
-نفّذ ملف الترحيل `supabase/migrations/20260815_001_bot_engine.sql` مرة واحدة في محرر SQL الخاص بالمشروع أو باستخدام CLI. ينشئ الترحيل جداول `bot_users` و`conversations` و`messages` و`documents` و`knowledge_base` و`bot_settings` و`webhook_events`.
+طبّق الترحيلات بالترتيب في محرر SQL أو CLI الخاص بـ Supabase. الترحيل الثاني هو الترحيل المعتمد للجلسة؛ يضيف فقط `whatsapp_auth_state` و`whatsapp_connection_state` ولا يغير أي جدول قائم.
 
-العلاقات الأساسية هي `bot_users -> conversations -> messages`، بينما ترتبط الوثائق بالمستخدم والمحادثة. يفرض `webhook_events.external_event_id` الفريد معالجة الرسالة مرة واحدة، وتفهرس الرسائل حسب المحادثة والزمن، وتستخدم `knowledge_base.search_vector` فهرس GIN للبحث النصي. فُعّل RLS على جميع الجداول ولا توجد سياسة عامة للمتصفح؛ المفتاح الخدمي يعمل داخل المحرك فقط. توصي Supabase بتفعيل RLS على الجداول في المخطط المكشوف وإبقاء مفاتيح الخدمة خارج المتصفح. [2]
-
-لبناء قاعدة المعرفة، أضف صفوفًا مؤكدة فقط إلى `public.knowledge_base` من خلال محرر Supabase أو عملية إدارة خادمية. على سبيل المثال:
-
-```sql
-insert into public.knowledge_base (title, category, content)
-values (
-  'مواعيد الاختبارات',
-  'exams',
-  'تُحدّث مواعيد الاختبارات رسميًا من قسم القبول والتسجيل. تواصل مع المعهد للحصول على الموعد المؤكد.'
-);
+```text
+supabase/migrations/20260815_001_bot_engine.sql
+supabase/migrations/20260815_002_baileys_session_state.sql
 ```
 
-البحث الأولي نصي ووزنه بسيط عمدًا. إذا كبرت قاعدة المعرفة أو احتاجت مطابقة دلالية أوسع، يوضح أسفل الترحيل نقطة التوسع الاختيارية إلى `pgvector`. لا تضف متجهات قبل اختيار نموذج embeddings وأبعاده، لأن مقارنة embeddings التي أنشأتها نماذج مختلفة غير صحيحة. [3]
+يخزن التطبيق `creds` وSignal keys بعد تشفير AES-256-GCM محليًا. لا يُخزن مفتاح التشفير في Supabase أو Git، ولا يُسجل في السجلات. تُفعّل RLS على الجدولين الجديدين ولا تنشأ أي سياسة عامة؛ لذا لا تصل متصفحات المستخدمين العاديين إليهما. مفتاح الخدمة داخل عملية المحرك وحده هو القادر على الوصول. يمكن التراجع يدويًا، إذا اقتضى الأمر، عبر `supabase/rollbacks/20260815_002_baileys_session_state.down.sql`؛ يحذف هذا الملف حالة Baileys الجديدة فقط ولا يلمس الذاكرة أو قاعدة المعرفة الحالية.
 
-## إعداد Wassenger والويبهوك
+## QR والاتصال واستعادة الجلسة
 
-1. اربط رقم المؤسسة في لوحة Wassenger وتأكد من أن حالته نشطة.
-2. انشر المحرك على عنوان HTTPS عام، ثم تحقق من `GET /health`.
-3. أنشئ webhooks للأحداث الواردة `message:in` أو `message:in:new` حسب إعداد حسابك، وأشر إلى `POST /webhooks/wassenger`.
-4. أضف ترويسة مخصصة باسم `x-webhook-secret` وبالقيمة نفسها في `WEBHOOK_SHARED_SECRET`.
-5. أرسل رسالة نصية اختبارية من رقم غير رقم البوت. يجب أن يظهر صف وارد ورد صادر في Supabase.
+في أول تشغيل لا يجد المحرك اعتمادًا محفوظًا؛ لذلك يسجل `whatsapp_qr_generated` ويطبع QR في طرفية تشغيل المحرك. امسحه من الهاتف عبر **WhatsApp > الأجهزة المرتبطة > ربط جهاز**. عند نجاح الربط يسجل `whatsapp_connected`، وتحفظ Baileys أي تغيير في `creds` وSignal keys إلى Supabase بشكل مشفر. في إعادة التشغيل التالية يحمل المحرك الحالة نفسها ولا يحتاج QR جديدًا ما لم تسجل خروج الحساب أو تلغِ الأجهزة المرتبطة أو تغير مفتاح التشفير.
 
-لا يفتح المحرك نقطة إرسال عامة، ولا يستقبل أسرارًا في الجسم، ولا يرد على المجموعات ما لم تضبط `ENABLE_GROUP_REPLY=true`. يدعم Wassenger ترويسات مخصصة للـ webhook، لذا استخدمها للتحقق من مصدر الطلب بدل قبول أي POST وارد. [1]
+عند انقطاع الاتصال غير النهائي يحفظ المحرك حالة `disconnected` ويحاول إعادة الاتصال بعد التأخير المكوّن. عند `loggedOut` يمسح الاعتماد المشفر حتى لا يحاول استعادته، ثم ينتظر QR جديدًا. لا تسجل السجلات محتوى الاعتماد أو QR أو مفاتيح API.
 
-## دعم الملفات
+## الرسائل والملفات والأمان
 
-تقبل الخدمة PDF وDOC وDOCX فقط. يتحقق المحرك من حد الحجم المعلن والحجم الفعلي، ويقارن ترويسة الملف بتوقيع PDF أو DOC/OLE أو DOCX/ZIP قبل الاستخراج. تُستخرج نصوص PDF وDOCX في الذاكرة، بينما يستخدم DOC ملفًا مؤقتًا بصلاحية المالك ويحذفه دائمًا في `finally`. لا ينفذ المحرك ما يوجد في المستند، ويعامل محتواه كسياق غير موثوق لا كتعليمات.
+يتجاهل المحرك الرسائل المرسلة من الحساب نفسه و`status@broadcast` افتراضيًا، ويمنع ردود المجموعات ما لم تضبط `ENABLE_GROUP_REPLY=true`. يستعمل `message.key.id` لمنع تكرار الحدث في `webhook_events` الموجود، ويحفظ هوية المحادثة بالـ JID ذاته لتبقى ذاكرة العميل مستقلة. يستعمل Gemini تاريخ المحادثة وقاعدة المعرفة كسياق غير موثوق، ولا يطيع تعليمات مضمنة في رسالة أو مستند تحاول تغيير الدور أو كشف الأسرار.
 
-## التحقق والاختبارات
+تقبل معالجة الملفات PDF وDOC وDOCX فقط. يُفحَص الحجم قبل التنزيل وبعده، ثم يتحقق المحرك من توقيع PDF أو DOC/OLE أو DOCX/ZIP قبل الاستخراج. لا ينفذ محتوى الملفات؛ وتعالج النصوص المستخرجة كسياق غير موثوق. يحذف مسار DOC الملف المؤقت دائمًا.
+
+## فحوص الصحة والاختبارات
 
 ```bash
-pnpm typecheck
+pnpm run bot:typecheck
 pnpm test
-pnpm build
+pnpm run bot:build
+pnpm run bot:start
+curl -i http://127.0.0.1:8080/health
+curl -i http://127.0.0.1:8080/whatsapp/status
 ```
 
-اختبارات الوحدة لا تحتاج حسابات خارجية؛ وهي تغطي كشف اللغة، التحقق من الإعدادات، بناء السياق المقاوم لحقن التعليمات، وتطبيع payload. أما اختبار الويبهوك الكامل فيحتاج مفاتيح بيئة صحيحة وقاعدة Supabase مطبّق عليها الترحيل ورقم Wassenger تجريبي.
+يعني `GET /health` أن عملية HTTP تعمل. ويعرض الحقل `whatsapp.connected` ما إذا كان WebSocket متصلًا؛ لا تعني صحة HTTP وحدها أن الحساب مرتبط بالفعل. اختبارات الوحدة محلية ولا تحتاج أسرارًا حقيقية، وتغطي الإعدادات وتطبيع رسالة Baileys وتشفير AES-256-GCM وفك التشفير وحفظ واسترجاع creds وSignal key عبر عقد مخزن معزول، إضافةً إلى حماية سياق Gemini.
 
-## التشغيل الإنتاجي
+## Render
 
-يشغّل هذا البوت مستمع webhook دائمًا، ولذلك لا يصلح عادة لنشر serverless قصير العمر أو لجلسة sandbox متوقفة. لا يحتاج هذا التصميم إلى قرص دائم لجلسة واتساب لأن Wassenger يدير اتصال الرقم؛ أما البيانات الدائمة فتسكن في Supabase.
+يحتوي المشروع على `render.yaml` مخصص للمحرك، وليس لتطبيق Next.js. استخدم إعدادات الخدمة التالية:
 
-| الخيار | الملاءمة | المزايا والتنازلات | القرار |
+| الإعداد | القيمة |
+| --- | --- |
+| نوع الخدمة | Web Service / Node.js |
+| Build Command | `pnpm install --frozen-lockfile && pnpm run bot:build` |
+| Start Command | `pnpm run bot:start` |
+| Health Check Path | `/health` |
+| الأسرار | `GEMINI_API_KEY` و`SUPABASE_URL` و`SUPABASE_SERVICE_ROLE_KEY` و`BAILEYS_AUTH_ENCRYPTION_KEY` في لوحة البيئة فقط. |
+
+| أسلوب التشغيل | الملاءمة | التكلفة والتعقيد | القيد الأساسي |
 | --- | --- | --- | --- |
-| خدمة Docker مُدارة مثل Render أو Railway | الأنسب لهذا المستودع | تنشر `Dockerfile.bot`، تعطي عنوان HTTPS، وتدعم health check وإعادة النشر من المستودع. تحافظ على تشغيل مستمر من دون إدارة نظام تشغيل. | **موصى به** كبداية إنتاجية مستقرة وبسيطة. |
-| VPS صغير + Docker | مناسب عند وجود فريق بنية تحتية أو حاجة إلى تحكم أعلى | تحكم كامل في الشبكة والمراقبة والنسخ الاحتياطي، لكنه يحمّل الفريق مسؤولية TLS والتحديثات والنظام والـ process supervisor. | بديل جيد عندما تكون السيطرة التشغيلية أهم من البساطة. |
+| Render Free مع Supabase | مناسب لاختبار QR والجلسة والبناء | إعداد بسيط وخطة مجانية | تتوقف الخدمة بعد 15 دقيقة من غياب الحركة، فتغلق WebSocket؛ لا تُستخدم لبوت مباشر موثوق. [2] |
+| خدمة Node.js دائمة ومدفوعة أو خادم موجود دائم التشغيل | مناسب للإنتاج | تكلفة تشغيل وإدارة أو اشتراك بسيط | يحافظ على WebSocket ويعيد الاتصال بعد الاستعادة. |
+| جهاز محلي يبقى متصلاً دائمًا | مناسب لتجربة قليلة الكلفة | لا كلفة استضافة إضافية | يتوقف البوت عند توقف الجهاز أو الإنترنت. |
 
-توثق Render نشر Docker من ملف `Dockerfile` ودعم health checks والنشر بلا توقف، كما تستطيع Railway بناء خدمة من Dockerfile وتحديد صحتها من health check. [6] [7] خزّن الأسرار في مدير أسرار المنصة، واضبط health check على `GET /health`، ثم لا تشغّل أكثر من نسخة من المحرك إلا بعد التأكد من استراتيجية idempotency المركزية في Supabase.
-
-يعرض `Dockerfile.bot` صورة تشغيل لا تتضمن ملف `.env`، ويدعم الأمر التالي محليًا:
-
-```bash
-docker build -f Dockerfile.bot -t wa-engine-bot .
-docker run --env-file .env -p 8080:8080 wa-engine-bot
-```
-
-راقب `/health` وسجلات JSON، ودوّر مفاتيح Gemini وSupabase وWassenger إذا تعرضت للخطر. تميّز الردود الاحتياطية بين العربية والإنجليزية ولا توقف استقبال الويبهوك عند تعطل Gemini أو قاعدة البيانات.
+يوفر Render فحوص HTTP لإعادة تشغيل العملية غير المستجيبة، ويقبل `GET /health` كفحص صحة. [3] استخدم الخدمة المجانية للتحقق الفني فقط. لا يمكن لنبض HTTP إلى `/health` تحويلها إلى منصة موثوقة لإدارة اتصال WhatsApp مباشر طوال الوقت؛ استخدم عملية دائمة للإنتاج.
 
 ## المراجع
 
-[1] [Wassenger Developers — REST API and real-time webhooks](https://wassenger.com/developers)  
-[2] [Supabase — Row Level Security](https://supabase.com/docs/guides/database/postgres/row-level-security)  
-[3] [Supabase — Semantic search and pgvector](https://supabase.com/docs/guides/ai/semantic-search)  
-[4] [Google Gemini API — Text generation](https://ai.google.dev/gemini-api/docs/text-generation)  
-[5] [Google Gemini API — Gemini 2.5 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash)  
-[6] [Render — Docker deployments](https://render.com/docs/docker)  
-[7] [Railway — Deployments reference](https://docs.railway.com/deployments/reference)
+[1] [Baileys — الحزمة الرسمية المجتمعية والتوثيق](https://www.npmjs.com/package/@whiskeysockets/baileys)
+[2] [Render — قيود الخدمات المجانية](https://render.com/docs/free)
+[3] [Render — Health Checks](https://render.com/docs/health-checks)
+[4] [Supabase — Row Level Security](https://supabase.com/docs/guides/database/postgres/row-level-security)
+[5] [Gemini API — Text generation](https://ai.google.dev/gemini-api/docs/text-generation)

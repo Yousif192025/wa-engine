@@ -1,54 +1,79 @@
-import { createHash } from 'node:crypto'
+import type { WAMessage } from '@whiskeysockets/baileys'
+import type { BaileysTransport } from './baileys-client'
 import type { EngineConfig } from './config'
 import { fallbackMessage } from './config'
 import { DocumentProcessor } from './documents'
 import type { GeminiGenerator } from './gemini'
 import { BotRepository } from './repository'
-import type { MessageType, NormalizedInboundMessage, ProcessResult, WassengerWebhook } from './types'
+import type { MessageType, NormalizedInboundMessage, ProcessResult } from './types'
 import { cleanText, detectLanguage, log, logError, type SupportedLanguage } from './utils'
-import { WassengerClient } from './wassenger'
 
-function stableEventId(webhook: WassengerWebhook): string {
-  const directId = webhook.id ?? webhook.data?.id ?? webhook.data?.waId
-  if (directId) return String(directId)
-  return createHash('sha256').update(JSON.stringify(webhook)).digest('hex')
-}
-
-function normalizeType(value: string | undefined): MessageType {
-  if (value === 'document') return 'document'
-  if (value === 'text' || value === 'chat') return 'text'
-  if (value === 'image') return 'image'
-  if (value === 'audio') return 'audio'
+function messageType(message: WAMessage): MessageType {
+  const content = message.message
+  if (!content) return 'unsupported'
+  if (content.documentMessage) return 'document'
+  if (content.conversation || content.extendedTextMessage) return 'text'
+  if (content.imageMessage) return 'image'
+  if (content.audioMessage) return 'audio'
   return 'unsupported'
 }
 
-export function normalizeWebhook(webhook: WassengerWebhook, maxCharacters: number): NormalizedInboundMessage {
-  if (!webhook.data) throw new Error('Webhook payload is missing data')
-  const message = webhook.data
-  const chat = message.chat
-  const phoneNumber = cleanText(message.fromNumber ?? chat?.contact?.phone ?? chat?.fromNumber, 40)
-  if (!phoneNumber) throw new Error('Webhook message is missing the sender phone number')
+function messageBody(message: WAMessage): string | undefined {
+  const content = message.message
+  return content?.conversation
+    ?? content?.extendedTextMessage?.text
+    ?? content?.documentMessage?.caption
+    ?? content?.imageMessage?.caption
+    ?? undefined
+}
 
-  const externalMessageId = cleanText(message.id ?? message.waId ?? webhook.id, 200) || stableEventId(webhook)
-  const eventId = stableEventId(webhook)
-  const conversationExternalId = cleanText(chat?.id ?? phoneNumber, 200)
-  const chatType = chat?.type?.toLowerCase()
-  const isGroup = chatType === 'group' || chatType === 'broadcast' || /@g\.us$/i.test(conversationExternalId)
-  const body = cleanText(message.body ?? message.caption, maxCharacters)
+function messageTimestamp(value: unknown): string {
+  if (typeof value === 'number') return new Date(value * 1000).toISOString()
+  if (typeof value === 'string' && /^\d+$/.test(value)) return new Date(Number(value) * 1000).toISOString()
+  if (value && typeof value === 'object' && 'toNumber' in value && typeof value.toNumber === 'function') {
+    return new Date(value.toNumber() * 1000).toISOString()
+  }
+  return new Date().toISOString()
+}
 
+function userIdentifier(jid: string | undefined): string {
+  return (jid ?? '').split('@')[0].split(':')[0].replace(/\D/g, '')
+}
+
+export function normalizeBaileysMessage(message: WAMessage, maxCharacters: number): NormalizedInboundMessage {
+  const remoteJid = message.key.remoteJid
+  const messageId = message.key.id
+  if (message.key.fromMe) throw new Error('Ignoring message sent by this WhatsApp account')
+  if (!remoteJid || !messageId) throw new Error('Baileys message is missing remote JID or message ID')
+  if (remoteJid === 'status@broadcast' || remoteJid.endsWith('@broadcast')) throw new Error('Unsupported broadcast message')
+
+  const isGroup = remoteJid.endsWith('@g.us')
+  const senderJid = isGroup ? message.key.participant : remoteJid
+  const phoneNumber = userIdentifier(senderJid ?? undefined)
+  if (!phoneNumber || phoneNumber.length < 6 || phoneNumber.length > 20) {
+    throw new Error('Baileys message sender is not a supported phone identifier')
+  }
+
+  const type = messageType(message)
+  const document = message.message?.documentMessage
   return {
-    eventId,
-    externalMessageId,
-    deviceId: cleanText(webhook.device?.id, 100) || undefined,
-    conversationExternalId,
+    eventId: messageId,
+    externalMessageId: messageId,
+    conversationExternalId: remoteJid,
     phoneNumber,
-    displayName: cleanText(chat?.contact?.displayName ?? chat?.contact?.name, 120) || undefined,
+    displayName: cleanText(message.pushName, 120) || undefined,
     isGroup,
-    type: normalizeType(message.type),
-    body,
-    timestamp: message.createdAt ?? message.date ?? new Date().toISOString(),
-    media: message.media,
-    raw: webhook,
+    type,
+    body: cleanText(messageBody(message), maxCharacters),
+    timestamp: messageTimestamp(message.messageTimestamp),
+    media: document
+      ? {
+          mimeType: document.mimetype,
+          filename: document.fileName,
+          size: document.fileLength,
+        }
+      : undefined,
+    raw: message,
   }
 }
 
@@ -75,22 +100,19 @@ export class MessageProcessor {
     private readonly config: EngineConfig,
     private readonly repository: BotRepository,
     private readonly gemini: GeminiGenerator,
-    private readonly wassenger: WassengerClient,
+    private readonly whatsapp: BaileysTransport,
     private readonly documents: DocumentProcessor,
   ) {}
 
-  async process(webhook: WassengerWebhook): Promise<ProcessResult> {
+  async process(message: WAMessage): Promise<ProcessResult> {
     let inbound: NormalizedInboundMessage
     try {
-      inbound = normalizeWebhook(webhook, this.config.maxInputCharacters)
+      inbound = normalizeBaileysMessage(message, this.config.maxInputCharacters)
     } catch (error) {
-      logError('webhook_rejected', error)
-      return { accepted: false, reason: 'invalid_payload' }
+      logError('whatsapp_message_rejected', error)
+      return { accepted: false, reason: 'invalid_message' }
     }
 
-    if (!['message:in', 'message:in:new'].includes(webhook.event ?? '')) {
-      return { accepted: true, reason: 'ignored_event' }
-    }
     if (inbound.isGroup && !this.config.enableGroupReply) {
       return { accepted: true, reason: 'groups_disabled' }
     }
@@ -101,7 +123,7 @@ export class MessageProcessor {
     let claimed = false
     let language: SupportedLanguage = detectLanguage(inbound.body, this.config.defaultLanguage)
     try {
-      claimed = await this.repository.claimWebhookEvent(inbound.eventId, webhook.event ?? 'message:in')
+      claimed = await this.repository.claimWebhookEvent(inbound.eventId, 'baileys_message')
       if (!claimed) return { accepted: true, duplicate: true, reason: 'duplicate_event' }
 
       const existingConversation = await this.repository.findConversation(inbound.conversationExternalId)
@@ -113,12 +135,12 @@ export class MessageProcessor {
       let documentText: string | undefined
       if (inbound.type === 'document') {
         try {
-          const extracted = await this.documents.downloadAndExtract(inbound.deviceId, inbound.media ?? {})
+          const extracted = await this.documents.downloadAndExtract(inbound.raw, (source) => this.whatsapp.downloadMedia(source))
           documentText = extracted.text
           await this.repository.saveDocument({
             userId: user.id,
             conversationId: conversation.id,
-            externalMediaId: inbound.media?.id,
+            externalMediaId: inbound.externalMessageId,
             filename: extracted.filename,
             mimeType: extracted.mimeType,
             sizeBytes: extracted.sizeBytes,
@@ -149,7 +171,7 @@ export class MessageProcessor {
         type: inbound.type,
         content: messageContent || `[${inbound.type}]`,
         language,
-        metadata: { timestamp: inbound.timestamp, has_media: Boolean(inbound.media?.id) },
+        metadata: { timestamp: inbound.timestamp, has_media: Boolean(inbound.media) },
       })
 
       if (!messageContent) {
@@ -158,7 +180,7 @@ export class MessageProcessor {
         return { accepted: true, reason: 'empty_message' }
       }
 
-      this.wassenger.sendTypingState({ deviceId: inbound.deviceId, chat: inbound.phoneNumber })
+      this.whatsapp.sendTypingState(inbound.conversationExternalId)
         .catch((error) => logError('typing_state_failed', error, { eventId: inbound.eventId }))
 
       const answer = this.config.enableAi
@@ -172,17 +194,13 @@ export class MessageProcessor {
     } catch (error) {
       logError('message_processing_failed', error, { eventId: inbound.eventId })
       try {
-        await this.wassenger.sendText({
-          phoneNumber: inbound.phoneNumber,
-          message: fallbackMessage(this.config, language),
-          deviceId: inbound.deviceId,
-        })
+        await this.whatsapp.sendText(inbound.conversationExternalId, fallbackMessage(this.config, language))
       } catch (sendError) {
         logError('fallback_send_failed', sendError, { eventId: inbound.eventId })
       }
       if (claimed) {
         await this.repository.completeWebhookEvent(inbound.eventId, 'failed', error instanceof Error ? error.message : 'Unknown error')
-          .catch((completionError) => logError('webhook_completion_failed', completionError, { eventId: inbound.eventId }))
+          .catch((completionError) => logError('event_completion_failed', completionError, { eventId: inbound.eventId }))
       }
       return { accepted: false, reason: 'processing_failed' }
     }
@@ -208,11 +226,7 @@ export class MessageProcessor {
     language: SupportedLanguage,
     message: string,
   ): Promise<void> {
-    const outgoingId = await this.wassenger.sendText({
-      phoneNumber: inbound.phoneNumber,
-      message,
-      deviceId: inbound.deviceId,
-    })
+    const outgoingId = await this.whatsapp.sendText(inbound.conversationExternalId, message)
     await this.repository.saveMessage({
       conversationId,
       externalMessageId: outgoingId ?? `outbound:${inbound.eventId}`,

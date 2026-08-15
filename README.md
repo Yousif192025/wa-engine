@@ -2,7 +2,7 @@
 
 A comprehensive Next.js application for managing WhatsApp AI agents via the [BerryLabs API](https://docs.berrylabs.io/docs/api/wa-agent/overview). This platform provides a complete dashboard for creating, configuring, and managing intelligent WhatsApp chatbots with advanced features like knowledge bases, file references, webhook integrations, and scheduling.
 
-> **New standalone bot runtime:** The repository also includes a production-oriented Gemini + Supabase + Wassenger webhook engine under `src/engine`. It is intentionally separate from this existing dashboard integration to preserve the BerryLabs workflow. See [BOT_ENGINE.md](./BOT_ENGINE.md) for installation, Supabase migration, security, testing, and deployment steps.
+> **Standalone bot runtime:** The repository also includes a direct WhatsApp engine based on Baileys, Gemini, and Supabase under `src/engine`. It remains separate from this existing dashboard integration to preserve the BerryLabs workflow. The bot session is encrypted before persistence in Supabase. See [BOT_ENGINE.md](./BOT_ENGINE.md) for installation, the approved session migration, QR pairing, security, testing, and deployment steps.
 
 🚀 **[Try Live Demo](https://reseller.berrylabs.io/)** - Experience the platform in action!
 
@@ -72,7 +72,7 @@ A comprehensive Next.js application for managing WhatsApp AI agents via the [Ber
 
 ## 🔧 Prerequisites
 
-- Node.js 18.0 or higher
+- Node.js 20 through 22 for the standalone Baileys engine
 - pnpm (recommended) or npm
 - BerryLabs account and API key
 - Clerk account for authentication

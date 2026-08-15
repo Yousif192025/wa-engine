@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "private": true,
   "license": "BerryLabs Technologies Private Limited",
+  "engines": {
+    "node": ">=20 <23"
+  },
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
@@ -33,6 +36,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@supabase/supabase-js": "^2.112.3",
     "@types/qrcode": "^1.5.5",
+    "@whiskeysockets/baileys": "6.7.24",
     "axios": "^1.18.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto'
 import { unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { extractMessageContent, type WAMessage } from '@whiskeysockets/baileys'
 import { PDFParse } from 'pdf-parse'
 import mammoth from 'mammoth'
 import WordExtractor from 'word-extractor'
 import type { EngineConfig } from './config'
 import { supportedDocumentMimeTypes } from './config'
-import type { WassengerMedia } from './types'
 import { cleanText, withTimeout } from './utils'
 
 const PDF_SIGNATURE = Buffer.from('%PDF')
@@ -25,7 +25,7 @@ function startsWith(buffer: Buffer, signature: Buffer): boolean {
   return buffer.length >= signature.length && buffer.subarray(0, signature.length).equals(signature)
 }
 
-function inferMimeType(buffer: Buffer, claimedMimeType?: string): string | undefined {
+function inferMimeType(buffer: Buffer, claimedMimeType?: string | null): string | undefined {
   if (startsWith(buffer, PDF_SIGNATURE)) return 'application/pdf'
   if (startsWith(buffer, DOC_SIGNATURE)) return 'application/msword'
   if (startsWith(buffer, ZIP_SIGNATURE)) {
@@ -34,48 +34,47 @@ function inferMimeType(buffer: Buffer, claimedMimeType?: string): string | undef
   return claimedMimeType?.toLowerCase()
 }
 
-function safeFilename(value: string | undefined, fallbackExtension: string): string {
+function safeFilename(value: string | null | undefined, fallbackExtension: string): string {
   const basename = (value ?? `document-${Date.now()}${fallbackExtension}`)
     .replace(/[^a-zA-Z0-9._-]/g, '_')
     .slice(0, 120)
   return basename || `document-${Date.now()}${fallbackExtension}`
 }
 
+function documentFromMessage(message: WAMessage) {
+  return extractMessageContent(message.message)?.documentMessage
+}
+
+function fileLength(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value)
+  if (value && typeof value === 'object' && 'toNumber' in value && typeof value.toNumber === 'function') {
+    return value.toNumber()
+  }
+  return undefined
+}
+
 export class DocumentProcessor {
   constructor(private readonly config: EngineConfig) {}
 
-  async downloadAndExtract(deviceId: string | undefined, media: WassengerMedia): Promise<ExtractedDocument> {
-    if (!deviceId || !media.id) throw new Error('Document device or media identifier is missing')
-    if (media.size && media.size > this.config.maxFileSizeBytes) throw new Error('Document exceeds MAX_FILE_SIZE')
+  async downloadAndExtract(message: WAMessage, downloader: (message: WAMessage) => Promise<Buffer>): Promise<ExtractedDocument> {
+    const document = documentFromMessage(message)
+    if (!document) throw new Error('Incoming Baileys message does not contain a document')
 
-    const url = new URL(
-      `chat/${encodeURIComponent(deviceId)}/files/${encodeURIComponent(media.id)}/download`,
-      `${this.config.wassengerApiUrl.replace(/\/$/, '')}/`,
-    )
-    const response = await withTimeout(
-      fetch(url, { headers: { Token: this.config.wassengerApiKey } }),
-      this.config.requestTimeoutMs,
-      'Document download',
-    )
-    if (!response.ok) throw new Error(`Unable to download document: HTTP ${response.status}`)
+    const declaredSize = fileLength(document.fileLength)
+    if (declaredSize && declaredSize > this.config.maxFileSizeBytes) throw new Error('Document exceeds MAX_FILE_SIZE')
 
-    const advertisedSize = Number(response.headers.get('content-length') ?? media.size ?? 0)
-    if (advertisedSize && advertisedSize > this.config.maxFileSizeBytes) {
-      throw new Error('Document exceeds MAX_FILE_SIZE')
-    }
-
-    const buffer = Buffer.from(await response.arrayBuffer())
+    const buffer = await withTimeout(downloader(message), this.config.requestTimeoutMs, 'Document download')
     if (!buffer.length) throw new Error('Document is empty')
     if (buffer.length > this.config.maxFileSizeBytes) throw new Error('Document exceeds MAX_FILE_SIZE')
 
-    const claimedMimeType = response.headers.get('content-type')?.split(';')[0] ?? media.mime ?? media.mimetype ?? media.type
-    const mimeType = inferMimeType(buffer, claimedMimeType)
+    const mimeType = inferMimeType(buffer, document.mimetype)
     if (!mimeType || !supportedDocumentMimeTypes.has(mimeType)) {
       throw new Error('Only PDF, DOC, and DOCX documents are supported')
     }
 
     const extension = mimeType === 'application/pdf' ? '.pdf' : mimeType === 'application/msword' ? '.doc' : '.docx'
-    const filename = safeFilename(media.filename ?? media.name, extension)
+    const filename = safeFilename(document.fileName, extension)
     const text = await this.extractText(buffer, mimeType, extension)
     return { filename, mimeType, sizeBytes: buffer.length, text: cleanText(text, this.config.maxInputCharacters) }
   }

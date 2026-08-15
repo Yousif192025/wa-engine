@@ -1,0 +1,19 @@
+services:
+  - type: web
+    runtime: node
+    name: wa-engine-baileys
+    buildCommand: pnpm install --frozen-lockfile && pnpm run bot:build
+    startCommand: pnpm run bot:start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: BAILEYS_AUTH_ENCRYPTION_KEY
+        sync: false
