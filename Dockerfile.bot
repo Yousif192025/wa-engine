@@ -1,0 +1,23 @@
+FROM node:22-alpine AS build
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts
+
+COPY tsconfig.json tsconfig.engine.json ./
+COPY src/engine ./src/engine
+COPY src/types/vendor.d.ts ./src/types/vendor.d.ts
+RUN pnpm bot:build
+
+FROM node:22-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack enable && pnpm install --prod --frozen-lockfile --ignore-scripts && \
+    addgroup -S app && adduser -S app -G app
+
+COPY --from=build /app/dist-engine ./dist-engine
+USER app
+EXPOSE 8080
+CMD ["node", "dist-engine/engine/index.js"]
