@@ -89,18 +89,57 @@ test('Baileys normalization recognizes a group document without changing the cha
   assert.equal(inbound.type, 'document')
   assert.equal(inbound.isGroup, true)
   assert.equal(inbound.body, 'اقرأ هذا الملف')
-  assert.equal(inbound.phoneNumber, '966500000000')
+  assert.equal(inbound.sender.kind, 'phone')
+  assert.equal(inbound.sender.phoneNumber, '966500000000')
+  assert.equal(inbound.sender.storageIdentifier, '966500000000')
   assert.equal(inbound.conversationExternalId, '123456@g.us')
 })
 
 test('Baileys auth values are AES-256-GCM encrypted and reject a different key', () => {
   const cipher = new BaileysAuthCipher(Buffer.alloc(32, 9).toString('base64'))
-  const encrypted = cipher.encrypt({ secret: randomBytes(8), counter: 1 })
+  const original = { secret: randomBytes(8), counter: 1, bytes: Uint8Array.from([1, 2, 3]) }
+  const encrypted = cipher.encrypt(original)
   assert.notEqual(encrypted.ciphertext, JSON.stringify({ counter: 1 }))
-  assert.deepEqual(cipher.decrypt<{ counter: number }>(encrypted).counter, 1)
+  const restored = cipher.decrypt<typeof original>(encrypted)
+  assert.equal(restored.counter, 1)
+  assert.deepEqual(restored.secret, original.secret)
+  assert.ok(Buffer.isBuffer(restored.bytes))
+  assert.deepEqual([...restored.bytes], [...original.bytes])
 
   const otherCipher = new BaileysAuthCipher(Buffer.alloc(32, 8).toString('base64'))
   assert.throws(() => otherCipher.decrypt(encrypted), /Unable to decrypt/)
+})
+
+test('Baileys LID sender uses an internal storage identifier and never treats the LID as a phone number', () => {
+  const inbound = normalizeBaileysMessage({
+    key: { id: 'message-lid-1', remoteJid: '152183676895296@lid', fromMe: false },
+    messageTimestamp: 1_700_000_000,
+    message: { conversation: 'hello' },
+  } as WAMessage, 5000)
+
+  assert.equal(inbound.sender.kind, 'lid')
+  assert.equal(inbound.sender.phoneNumber, undefined)
+  assert.equal(inbound.sender.lid, '152183676895296@lid')
+  assert.match(inbound.sender.storageIdentifier, /^0\d{19}$/)
+  assert.notEqual(inbound.sender.storageIdentifier, '152183676895296')
+})
+
+test('Baileys uses senderPn when WhatsApp supplies a PN alongside a direct LID', () => {
+  const inbound = normalizeBaileysMessage({
+    key: {
+      id: 'message-lid-pn-1',
+      remoteJid: '152183676895296@lid',
+      senderPn: '966500000000@s.whatsapp.net',
+      fromMe: false,
+    },
+    messageTimestamp: 1_700_000_000,
+    message: { conversation: 'hello' },
+  } as WAMessage, 5000)
+
+  assert.equal(inbound.sender.kind, 'phone')
+  assert.equal(inbound.sender.phoneNumber, '966500000000')
+  assert.equal(inbound.sender.lid, '152183676895296@lid')
+  assert.equal(inbound.sender.storageIdentifier, '966500000000')
 })
 
 test('Baileys authentication credentials and Signal keys persist through the encrypted repository contract', async () => {

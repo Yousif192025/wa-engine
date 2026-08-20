@@ -10,11 +10,19 @@ export interface BaileysDocumentMedia {
   size?: unknown
 }
 
+export interface SenderIdentity {
+  kind: 'phone' | 'lid'
+  jid: string
+  lid?: string
+  phoneNumber?: string
+  storageIdentifier: string
+}
+
 export interface NormalizedInboundMessage {
   eventId: string
   externalMessageId: string
   conversationExternalId: string
-  phoneNumber: string
+  sender: SenderIdentity
   displayName?: string
   isGroup: boolean
   type: MessageType

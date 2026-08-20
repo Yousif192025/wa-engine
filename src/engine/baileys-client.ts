@@ -62,6 +62,8 @@ export class BaileysClient implements BaileysTransport {
   private socket: WASocket | undefined
   private messageHandler: ((message: WAMessage) => Promise<void>) | undefined
   private reconnectTimer: NodeJS.Timeout | undefined
+  private connectingPromise: Promise<void> | undefined
+  private credentialsPersistQueue: Promise<void> = Promise.resolve()
   private stopped = false
   private connectionStatus: WhatsAppConnectionStatus = 'disconnected'
   private connectedJid: string | undefined
@@ -132,6 +134,20 @@ export class BaileysClient implements BaileysTransport {
 
   private async connect(): Promise<void> {
     if (this.stopped) return
+    if (this.connectingPromise) return this.connectingPromise
+
+    const pending = this.connectInternal()
+    this.connectingPromise = pending
+    try {
+      await pending
+    } finally {
+      if (this.connectingPromise === pending) this.connectingPromise = undefined
+    }
+  }
+
+  private async connectInternal(): Promise<void> {
+    if (this.stopped) return
+    await this.credentialsPersistQueue
     this.connectionStatus = 'connecting'
     await this.sessionRepository.saveConnectionState({ status: 'connecting' })
     log('whatsapp_connecting')
@@ -148,17 +164,15 @@ export class BaileysClient implements BaileysTransport {
     this.socket = socket
 
     socket.ev.on('creds.update', () => {
-      this.authState.saveCreds(socket.authState.creds).catch((error) => {
-        logError('whatsapp_auth_state_save_failed', error)
-      })
+      this.queueCredentialsSave(socket)
     })
 
     socket.ev.on('connection.update', (update) => {
-      void this.handleConnectionUpdate(update)
+      void this.handleConnectionUpdate(socket, update)
     })
 
     socket.ev.on('messages.upsert', ({ type, messages }) => {
-      if (type !== 'notify') return
+      if (socket !== this.socket || type !== 'notify') return
       for (const message of messages) {
         if (message.key.fromMe || !message.key.remoteJid || message.key.remoteJid === 'status@broadcast') continue
         this.handleInboundMessage(message)
@@ -166,11 +180,16 @@ export class BaileysClient implements BaileysTransport {
     })
   }
 
-  private async handleConnectionUpdate(update: {
+  private async handleConnectionUpdate(socket: WASocket, update: {
     connection?: 'connecting' | 'open' | 'close'
     lastDisconnect?: { error?: Error }
     qr?: string
   }): Promise<void> {
+    if (socket !== this.socket) {
+      log('whatsapp_stale_connection_update_ignored', { connection: update.connection ?? 'unknown' })
+      return
+    }
+
     if (update.qr) {
       this.connectionStatus = 'qr_pending'
       await this.sessionRepository.saveConnectionState({ status: 'qr_pending', qrGenerated: true })
@@ -185,7 +204,7 @@ export class BaileysClient implements BaileysTransport {
 
     if (update.connection === 'open') {
       this.connectionStatus = 'connected'
-      this.connectedJid = this.socket?.user?.id
+      this.connectedJid = socket.user?.id
       await this.sessionRepository.saveConnectionState({
         status: 'connected',
         connected: true,
@@ -222,6 +241,18 @@ export class BaileysClient implements BaileysTransport {
     })
     log('whatsapp_disconnected', { statusCode })
     this.scheduleReconnect()
+  }
+
+  private queueCredentialsSave(socket: WASocket): void {
+    this.credentialsPersistQueue = this.credentialsPersistQueue
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.socket !== socket) return
+        await this.authState.saveCreds(socket.authState.creds)
+      })
+    this.credentialsPersistQueue.catch((error) => {
+      logError('whatsapp_auth_state_save_failed', error)
+    })
   }
 
   private handleInboundMessage(message: WAMessage): void {

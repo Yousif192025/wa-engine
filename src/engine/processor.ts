@@ -5,6 +5,7 @@ import { fallbackMessage } from './config'
 import { DocumentProcessor } from './documents'
 import type { GeminiGenerator } from './gemini'
 import { BotRepository } from './repository'
+import { resolveSenderIdentity } from './sender-identity'
 import type { MessageType, NormalizedInboundMessage, ProcessResult } from './types'
 import { cleanText, detectLanguage, log, logError, type SupportedLanguage } from './utils'
 
@@ -36,10 +37,6 @@ function messageTimestamp(value: unknown): string {
   return new Date().toISOString()
 }
 
-function userIdentifier(jid: string | undefined): string {
-  return (jid ?? '').split('@')[0].split(':')[0].replace(/\D/g, '')
-}
-
 export function normalizeBaileysMessage(message: WAMessage, maxCharacters: number): NormalizedInboundMessage {
   const remoteJid = message.key.remoteJid
   const messageId = message.key.id
@@ -48,11 +45,7 @@ export function normalizeBaileysMessage(message: WAMessage, maxCharacters: numbe
   if (remoteJid === 'status@broadcast' || remoteJid.endsWith('@broadcast')) throw new Error('Unsupported broadcast message')
 
   const isGroup = remoteJid.endsWith('@g.us')
-  const senderJid = isGroup ? message.key.participant : remoteJid
-  const phoneNumber = userIdentifier(senderJid ?? undefined)
-  if (!phoneNumber || phoneNumber.length < 6 || phoneNumber.length > 20) {
-    throw new Error('Baileys message sender is not a supported phone identifier')
-  }
+  const sender = resolveSenderIdentity(message)
 
   const type = messageType(message)
   const document = message.message?.documentMessage
@@ -60,7 +53,7 @@ export function normalizeBaileysMessage(message: WAMessage, maxCharacters: numbe
     eventId: messageId,
     externalMessageId: messageId,
     conversationExternalId: remoteJid,
-    phoneNumber,
+    sender,
     displayName: cleanText(message.pushName, 120) || undefined,
     isGroup,
     type,
@@ -128,7 +121,7 @@ export class MessageProcessor {
 
       const existingConversation = await this.repository.findConversation(inbound.conversationExternalId)
       language = detectLanguage(inbound.body, existingConversation?.language ?? this.config.defaultLanguage)
-      const user = await this.repository.getOrCreateUser(inbound.phoneNumber, inbound.displayName)
+      const user = await this.repository.getOrCreateUser(inbound.sender, inbound.displayName)
       const conversation = await this.repository.getOrCreateConversation(user.id, inbound.conversationExternalId, language)
 
       let messageContent = inbound.body

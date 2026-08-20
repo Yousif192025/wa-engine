@@ -1,12 +1,13 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { EngineConfig } from './config'
-import type { KnowledgeContext, MessageDirection, StoredMessage } from './types'
+import type { KnowledgeContext, MessageDirection, SenderIdentity, StoredMessage } from './types'
 import type { SupportedLanguage } from './utils'
 
 interface UserRecord {
   id: string
   phone_number: string
   display_name?: string | null
+  metadata?: Record<string, unknown> | null
 }
 
 interface ConversationRecord {
@@ -43,28 +44,46 @@ export class BotRepository {
     if (error) throw new Error(`Unable to complete webhook event: ${error.message}`)
   }
 
-  async getOrCreateUser(phoneNumber: string, displayName?: string): Promise<UserRecord> {
+  async getOrCreateUser(sender: SenderIdentity, displayName?: string): Promise<UserRecord> {
+    const metadata = {
+      whatsapp_identity: {
+        kind: sender.kind,
+        jid: sender.jid,
+        lid: sender.lid ?? null,
+        phone_number: sender.phoneNumber ?? null,
+      },
+    }
     const { data: existing, error: selectError } = await this.client
       .from('bot_users')
-      .select('id, phone_number, display_name')
-      .eq('phone_number', phoneNumber)
+      .select('id, phone_number, display_name, metadata')
+      .eq('phone_number', sender.storageIdentifier)
       .maybeSingle()
     if (selectError) throw new Error(`Unable to find user: ${selectError.message}`)
     if (existing) {
-      if (displayName && displayName !== existing.display_name) {
-        const { error } = await this.client
-          .from('bot_users')
-          .update({ display_name: displayName, updated_at: new Date().toISOString() })
-          .eq('id', existing.id)
-        if (error) throw new Error(`Unable to update user: ${error.message}`)
+      const existingMetadata = existing.metadata && typeof existing.metadata === 'object'
+        ? existing.metadata as Record<string, unknown>
+        : {}
+      const updates: Record<string, unknown> = {
+        metadata: { ...existingMetadata, ...metadata },
+        updated_at: new Date().toISOString(),
       }
-      return existing as UserRecord
+      if (displayName && displayName !== existing.display_name) updates.display_name = displayName
+      const { error } = await this.client
+        .from('bot_users')
+        .update(updates)
+        .eq('id', existing.id)
+      if (error) throw new Error(`Unable to update user: ${error.message}`)
+      return { ...existing, ...updates } as UserRecord
     }
 
     const { data, error } = await this.client
       .from('bot_users')
-      .insert({ phone_number: phoneNumber, display_name: displayName ?? null })
-      .select('id, phone_number, display_name')
+      .insert({
+        phone_number: sender.storageIdentifier,
+        display_name: displayName ?? null,
+        metadata,
+      })
+      .select('id, phone_number, display_name, metadata')
       .single()
     if (error) throw new Error(`Unable to create user: ${error.message}`)
     return data as UserRecord
