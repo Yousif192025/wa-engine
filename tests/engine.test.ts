@@ -112,23 +112,23 @@ test('Baileys auth values are AES-256-GCM encrypted and reject a different key',
 
 test('Baileys LID sender uses an internal storage identifier and never treats the LID as a phone number', () => {
   const inbound = normalizeBaileysMessage({
-    key: { id: 'message-lid-1', remoteJid: '152183676895296@lid', fromMe: false },
+    key: { id: 'message-lid-1', remoteJid: '262074710159420@lid', fromMe: false },
     messageTimestamp: 1_700_000_000,
     message: { conversation: 'hello' },
   } as WAMessage, 5000)
 
   assert.equal(inbound.sender.kind, 'lid')
   assert.equal(inbound.sender.phoneNumber, undefined)
-  assert.equal(inbound.sender.lid, '152183676895296@lid')
+  assert.equal(inbound.sender.lid, '262074710159420@lid')
   assert.match(inbound.sender.storageIdentifier, /^0\d{19}$/)
-  assert.notEqual(inbound.sender.storageIdentifier, '152183676895296')
+  assert.notEqual(inbound.sender.storageIdentifier, '262074710159420')
 })
 
 test('Baileys uses senderPn when WhatsApp supplies a PN alongside a direct LID', () => {
   const inbound = normalizeBaileysMessage({
     key: {
       id: 'message-lid-pn-1',
-      remoteJid: '152183676895296@lid',
+      remoteJid: '262074710159420@lid',
       senderPn: '966500000000@s.whatsapp.net',
       fromMe: false,
     },
@@ -138,7 +138,7 @@ test('Baileys uses senderPn when WhatsApp supplies a PN alongside a direct LID',
 
   assert.equal(inbound.sender.kind, 'phone')
   assert.equal(inbound.sender.phoneNumber, '966500000000')
-  assert.equal(inbound.sender.lid, '152183676895296@lid')
+  assert.equal(inbound.sender.lid, '262074710159420@lid')
   assert.equal(inbound.sender.storageIdentifier, '966500000000')
 })
 
