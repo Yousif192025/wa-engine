@@ -1,3 +1,4 @@
+```ts
 import {
   Browsers,
   DisconnectReason,
@@ -172,7 +173,14 @@ export class BaileysClient implements BaileysTransport {
     })
 
     socket.ev.on('messages.upsert', ({ type, messages }) => {
+      log('whatsapp_messages_upsert', {
+        type,
+        count: messages.length,
+        isCurrentSocket: socket === this.socket,
+      })
+
       if (socket !== this.socket || type !== 'notify') return
+
       for (const message of messages) {
         if (message.key.fromMe || !message.key.remoteJid || message.key.remoteJid === 'status@broadcast') continue
         this.handleInboundMessage(message)
@@ -282,3 +290,4 @@ export class BaileysClient implements BaileysTransport {
     return this.socket
   }
 }
+```
