@@ -1,0 +1,394 @@
+[1mdiff --git a/src/engine/repository.ts b/src/engine/repository.ts[m
+[1mindex 4a066cd..09562d8 100644[m
+[1m--- a/src/engine/repository.ts[m
+[1m+++ b/src/engine/repository.ts[m
+[36m@@ -5,7 +5,8 @@[m [mimport type { SupportedLanguage } from './utils'[m
+ [m
+ interface UserRecord {[m
+   id: string[m
+[31m-  phone_number: string[m
+[32m+[m[32m  phone_number: string | null[m
+[32m+[m[32m  whatsapp_identity: string[m
+   display_name?: string | null[m
+   metadata?: Record<string, unknown> | null[m
+ }[m
+[36m@@ -53,12 +54,9 @@[m [mexport class BotRepository {[m
+         phone_number: sender.phoneNumber ?? null,[m
+       },[m
+     }[m
+[31m-    const { data: existing, error: selectError } = await this.client[m
+[31m-      .from('bot_users')[m
+[31m-      .select('id, phone_number, display_name, metadata')[m
+[31m-      .eq('phone_number', sender.storageIdentifier)[m
+[31m-      .maybeSingle()[m
+[31m-    if (selectError) throw new Error(`Unable to find user: ${selectError.message}`)[m
+[32m+[m[32m    let existing = await this.findUserBy('whatsapp_identity', sender.whatsappIdentity)[m
+[32m+[m[32m    if (!existing && sender.phoneNumber) existing = await this.findUserBy('phone_number', sender.phoneNumber)[m
+[32m+[m
+     if (existing) {[m
+       const existingMetadata = existing.metadata && typeof existing.metadata === 'object'[m
+         ? existing.metadata as Record<string, unknown>[m
+[36m@@ -68,6 +66,10 @@[m [mexport class BotRepository {[m
+         updated_at: new Date().toISOString(),[m
+       }[m
+       if (displayName && displayName !== existing.display_name) updates.display_name = displayName[m
+[32m+[m[32m      if (sender.phoneNumber && sender.phoneNumber !== existing.phone_number) updates.phone_number = sender.phoneNumber[m
+[32m+[m[32m      if (sender.kind === 'lid' && sender.whatsappIdentity !== existing.whatsapp_identity) {[m
+[32m+[m[32m        updates.whatsapp_identity = sender.whatsappIdentity[m
+[32m+[m[32m      }[m
+       const { error } = await this.client[m
+         .from('bot_users')[m
+         .update(updates)[m
+[36m@@ -79,16 +81,27 @@[m [mexport class BotRepository {[m
+     const { data, error } = await this.client[m
+       .from('bot_users')[m
+       .insert({[m
+[31m-        phone_number: sender.storageIdentifier,[m
+[32m+[m[32m        whatsapp_identity: sender.whatsappIdentity,[m
+[32m+[m[32m        phone_number: sender.phoneNumber ?? null,[m
+         display_name: displayName ?? null,[m
+         metadata,[m
+       })[m
+[31m-      .select('id, phone_number, display_name, metadata')[m
+[32m+[m[32m      .select('id, phone_number, whatsapp_identity, display_name, metadata')[m
+       .single()[m
+     if (error) throw new Error(`Unable to create user: ${error.message}`)[m
+     return data as UserRecord[m
+   }[m
+ [m
+[32m+[m[32m  private async findUserBy(column: 'whatsapp_identity' | 'phone_number', value: string): Promise<UserRecord | null> {[m
+[32m+[m[32m    const { data, error } = await this.client[m
+[32m+[m[32m      .from('bot_users')[m
+[32m+[m[32m      .select('id, phone_number, whatsapp_identity, display_name, metadata')[m
+[32m+[m[32m      .eq(column, value)[m
+[32m+[m[32m      .maybeSingle()[m
+[32m+[m[32m    if (error) throw new Error(`Unable to find user: ${error.message}`)[m
+[32m+[m[32m    return (data as UserRecord | null) ?? null[m
+[32m+[m[32m  }[m
+[32m+[m
+   async findConversation(externalChatId: string): Promise<ConversationRecord | null> {[m
+     const { data, error } = await this.client[m
+       .from('conversations')[m
+[36m@@ -195,8 +208,7 @@[m [mexport class BotRepository {[m
+       .eq('is_active', true)[m
+       .textSearch('search_vector', safeQuery, { config: 'simple', type: 'websearch' })[m
+       .limit(limit)[m
+[31m-[m
+     if (error) throw new Error(`Unable to search knowledge base: ${error.message}`)[m
+[31m-    return (data ?? []).map((item, index) => ({ ...item, score: limit - index })) as KnowledgeContext[][m
+[32m+[m[32m    return ((data ?? []) as KnowledgeContext[]).map((item, index) => ({ ...item, score: limit - index }))[m
+   }[m
+ }[m
+[1mdiff --git a/src/engine/sender-identity.ts b/src/engine/sender-identity.ts[m
+[1mindex ad60cdc..28343c2 100644[m
+[1m--- a/src/engine/sender-identity.ts[m
+[1m+++ b/src/engine/sender-identity.ts[m
+[36m@@ -1,4 +1,3 @@[m
+[31m-import { createHash } from 'node:crypto'[m
+ import { jidDecode, jidNormalizedUser, type WAMessage } from '@whiskeysockets/baileys'[m
+ import type { SenderIdentity } from './types'[m
+ [m
+[36m@@ -14,14 +13,6 @@[m [mfunction lidFromJid(jid: string | undefined): string | undefined {[m
+   return jidNormalizedUser(jid)[m
+ }[m
+ [m
+[31m-function lidStorageIdentifier(lid: string): string {[m
+[31m-  // A leading zero makes this a reserved internal token rather than a valid E.164-style number.[m
+[31m-  // It preserves the existing numeric check without treating the opaque LID as a phone number.[m
+[31m-  const digest = createHash('sha256').update(lid).digest('hex')[m
+[31m-  const numeric = BigInt(`0x${digest}`).toString(10).padStart(19, '0').slice(0, 19)[m
+[31m-  return `0${numeric}`[m
+[31m-}[m
+[31m-[m
+ export function resolveSenderIdentity(message: WAMessage): SenderIdentity {[m
+   const remoteJid = message.key.remoteJid[m
+   if (!remoteJid) throw new Error('Baileys message is missing remote JID')[m
+[36m@@ -41,22 +32,22 @@[m [mexport function resolveSenderIdentity(message: WAMessage): SenderIdentity {[m
+   const lid = lidCandidates.map(lidFromJid).find(Boolean)[m
+ [m
+   const jid = jidNormalizedUser(primaryJid)[m
+[31m-  if (phoneNumber) {[m
+[32m+[m[32m  if (lid) {[m
+     return {[m
+[31m-      kind: 'phone',[m
+[32m+[m[32m      kind: 'lid',[m
+       jid,[m
+       lid,[m
+       phoneNumber,[m
+[31m-      storageIdentifier: phoneNumber,[m
+[32m+[m[32m      whatsappIdentity: `lid:${lid}`,[m
+     }[m
+   }[m
+ [m
+[31m-  if (lid) {[m
+[32m+[m[32m  if (phoneNumber) {[m
+     return {[m
+[31m-      kind: 'lid',[m
+[32m+[m[32m      kind: 'phone',[m
+       jid,[m
+[31m-      lid,[m
+[31m-      storageIdentifier: lidStorageIdentifier(lid),[m
+[32m+[m[32m      phoneNumber,[m
+[32m+[m[32m      whatsappIdentity: `pn:${phoneNumber}`,[m
+     }[m
+   }[m
+ [m
+[1mdiff --git a/src/engine/types.ts b/src/engine/types.ts[m
+[1mindex a05c64b..fbf51b1 100644[m
+[1m--- a/src/engine/types.ts[m
+[1m+++ b/src/engine/types.ts[m
+[36m@@ -15,7 +15,7 @@[m [mexport interface SenderIdentity {[m
+   jid: string[m
+   lid?: string[m
+   phoneNumber?: string[m
+[31m-  storageIdentifier: string[m
+[32m+[m[32m  whatsappIdentity: string[m
+ }[m
+ [m
+ export interface NormalizedInboundMessage {[m
+[1mdiff --git a/tests/engine.test.ts b/tests/engine.test.ts[m
+[1mindex 4ad57be..a7fb8ca 100644[m
+[1m--- a/tests/engine.test.ts[m
+[1m+++ b/tests/engine.test.ts[m
+[36m@@ -1,13 +1,15 @@[m
+ import assert from 'node:assert/strict'[m
+ import { randomBytes } from 'node:crypto'[m
+ import test from 'node:test'[m
+[32m+[m[32mimport type { SupabaseClient } from '@supabase/supabase-js'[m
+ import type { WAMessage } from '@whiskeysockets/baileys'[m
+[31m-import { BaileysAuthCipher } from '../src/engine/auth-crypto'[m
+[31m-import type { EncryptedAuthValue } from '../src/engine/auth-crypto'[m
+[31m-import { readEngineConfig } from '../src/engine/config'[m
+[32m+[m[32mimport { BaileysAuthCipher, type EncryptedAuthValue } from '../src/engine/auth-crypto'[m
+[32m+[m[32mimport { readEngineConfig, type EngineConfig } from '../src/engine/config'[m
+ import { buildSystemInstruction, buildUserContext } from '../src/engine/gemini'[m
+ import { normalizeBaileysMessage } from '../src/engine/processor'[m
+[32m+[m[32mimport { BotRepository } from '../src/engine/repository'[m
+ import { SupabaseAuthState, type BaileysAuthRepository } from '../src/engine/supabase-auth-state'[m
+[32m+[m[32mimport type { SenderIdentity } from '../src/engine/types'[m
+ import { detectLanguage } from '../src/engine/utils'[m
+ [m
+ function environment(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {[m
+[36m@@ -51,6 +53,77 @@[m [mclass MemoryAuthRepository implements BaileysAuthRepository {[m
+   }[m
+ }[m
+ [m
+[32m+[m[32minterface MemoryBotUser {[m
+[32m+[m[32m  id: string[m
+[32m+[m[32m  phone_number: string | null[m
+[32m+[m[32m  whatsapp_identity: string[m
+[32m+[m[32m  display_name: string | null[m
+[32m+[m[32m  metadata: Record<string, unknown>[m
+[32m+[m[32m  updated_at?: string[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mclass MemoryBotUsersClient {[m
+[32m+[m[32m  private readonly users: MemoryBotUser[] = [][m
+[32m+[m[32m  private nextId = 1[m
+[32m+[m
+[32m+[m[32m  readonly client = {[m
+[32m+[m[32m    from: (table: string) => {[m
+[32m+[m[32m      assert.equal(table, 'bot_users')[m
+[32m+[m[32m      return {[m
+[32m+[m[32m        select: () => ({[m
+[32m+[m[32m          eq: (column: 'whatsapp_identity' | 'phone_number', value: string) => ({[m
+[32m+[m[32m            maybeSingle: async () => ({[m
+[32m+[m[32m              data: this.users.find((user) => user[column] === value) ?? null,[m
+[32m+[m[32m              error: null,[m
+[32m+[m[32m            }),[m
+[32m+[m[32m          }),[m
+[32m+[m[32m        }),[m
+[32m+[m[32m        insert: (payload: Omit<MemoryBotUser, 'id'>) => ({[m
+[32m+[m[32m          select: () => ({[m
+[32m+[m[32m            single: async () => {[m
+[32m+[m[32m              const row: MemoryBotUser = { id: `user-${this.nextId++}`, ...payload }[m
+[32m+[m[32m              this.users.push(row)[m
+[32m+[m[32m              return { data: row, error: null }[m
+[32m+[m[32m            },[m
+[32m+[m[32m          }),[m
+[32m+[m[32m        }),[m
+[32m+[m[32m        update: (updates: Partial<MemoryBotUser>) => ({[m
+[32m+[m[32m          eq: async (column: 'id', value: string) => {[m
+[32m+[m[32m            const row = this.users.find((user) => user[column] === value)[m
+[32m+[m[32m            if (row) Object.assign(row, updates)[m
+[32m+[m[32m            return { error: row ? null : { message: 'missing user' } }[m
+[32m+[m[32m          },[m
+[32m+[m[32m        }),[m
+[32m+[m[32m      }[m
+[32m+[m[32m    },[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  repository(): BotRepository {[m
+[32m+[m[32m    return new BotRepository({} as EngineConfig, this.client as unknown as SupabaseClient)[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  count(): number {[m
+[32m+[m[32m    return this.users.length[m
+[32m+[m[32m  }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction inboundMessage(remoteJid: string, options: { id?: string; senderPn?: string } = {}): WAMessage {[m
+[32m+[m[32m  return {[m
+[32m+[m[32m    key: {[m
+[32m+[m[32m      id: options.id ?? `message-${remoteJid}`,[m
+[32m+[m[32m      remoteJid,[m
+[32m+[m[32m      senderPn: options.senderPn,[m
+[32m+[m[32m      fromMe: false,[m
+[32m+[m[32m    },[m
+[32m+[m[32m    messageTimestamp: 1_700_000_000,[m
+[32m+[m[32m    message: { conversation: 'hello' },[m
+[32m+[m[32m  } as WAMessage[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction senderFor(remoteJid: string, options: { id?: string; senderPn?: string } = {}): SenderIdentity {[m
+[32m+[m[32m  return normalizeBaileysMessage(inboundMessage(remoteJid, options), 5000).sender[m
+[32m+[m[32m}[m
+[32m+[m
+ test('configuration supplies safe Baileys defaults', () => {[m
+   const config = readEngineConfig(environment())[m
+   assert.equal(config.geminiModel, 'gemini-2.5-flash')[m
+[36m@@ -91,7 +164,7 @@[m [mtest('Baileys normalization recognizes a group document without changing the cha[m
+   assert.equal(inbound.body, 'اقرأ هذا الملف')[m
+   assert.equal(inbound.sender.kind, 'phone')[m
+   assert.equal(inbound.sender.phoneNumber, '966500000000')[m
+[31m-  assert.equal(inbound.sender.storageIdentifier, '966500000000')[m
+[32m+[m[32m  assert.equal(inbound.sender.whatsappIdentity, 'pn:966500000000')[m
+   assert.equal(inbound.conversationExternalId, '123456@g.us')[m
+ })[m
+ [m
+[36m@@ -110,36 +183,56 @@[m [mtest('Baileys auth values are AES-256-GCM encrypted and reject a different key',[m
+   assert.throws(() => otherCipher.decrypt(encrypted), /Unable to decrypt/)[m
+ })[m
+ [m
+[31m-test('Baileys LID sender uses an internal storage identifier and never treats the LID as a phone number', () => {[m
+[31m-  const inbound = normalizeBaileysMessage({[m
+[31m-    key: { id: 'message-lid-1', remoteJid: '262074710159420@lid', fromMe: false },[m
+[31m-    messageTimestamp: 1_700_000_000,[m
+[31m-    message: { conversation: 'hello' },[m
+[31m-  } as WAMessage, 5000)[m
+[32m+[m[32mtest('a LID-only sender keeps phone_number null and preserves the reported LID as WhatsApp identity', () => {[m
+[32m+[m[32m  const sender = senderFor('262074710159420@lid')[m
+[32m+[m[32m  assert.equal(sender.kind, 'lid')[m
+[32m+[m[32m  assert.equal(sender.phoneNumber, undefined)[m
+[32m+[m[32m  assert.equal(sender.lid, '262074710159420@lid')[m
+[32m+[m[32m  assert.equal(sender.whatsappIdentity, 'lid:262074710159420@lid')[m
+[32m+[m[32m})[m
+ [m
+[31m-  assert.equal(inbound.sender.kind, 'lid')[m
+[31m-  assert.equal(inbound.sender.phoneNumber, undefined)[m
+[31m-  assert.equal(inbound.sender.lid, '262074710159420@lid')[m
+[31m-  assert.match(inbound.sender.storageIdentifier, /^0\d{19}$/)[m
+[31m-  assert.notEqual(inbound.sender.storageIdentifier, '262074710159420')[m
+[32m+[m[32mtest('a real PN sender stores only the true phone number', () => {[m
+[32m+[m[32m  const sender = senderFor('966500000000@s.whatsapp.net')[m
+[32m+[m[32m  assert.equal(sender.kind, 'phone')[m
+[32m+[m[32m  assert.equal(sender.phoneNumber, '966500000000')[m
+[32m+[m[32m  assert.equal(sender.whatsappIdentity, 'pn:966500000000')[m
+ })[m
+ [m
+[31m-test('Baileys uses senderPn when WhatsApp supplies a PN alongside a direct LID', () => {[m
+[31m-  const inbound = normalizeBaileysMessage({[m
+[31m-    key: {[m
+[31m-      id: 'message-lid-pn-1',[m
+[31m-      remoteJid: '262074710159420@lid',[m
+[31m-      senderPn: '966500000000@s.whatsapp.net',[m
+[31m-      fromMe: false,[m
+[31m-    },[m
+[31m-    messageTimestamp: 1_700_000_000,[m
+[31m-    message: { conversation: 'hello' },[m
+[31m-  } as WAMessage, 5000)[m
+[32m+[m[32mtest('the same LID is found on a later message without creating a duplicate user', async () => {[m
+[32m+[m[32m  const repository = new MemoryBotUsersClient()[m
+[32m+[m[32m  const first = await repository.repository().getOrCreateUser(senderFor('262074710159420@lid', { id: 'lid-first' }))[m
+[32m+[m[32m  const later = await repository.repository().getOrCreateUser(senderFor('262074710159420@lid', { id: 'lid-later' }))[m
+ [m
+[31m-  assert.equal(inbound.sender.kind, 'phone')[m
+[31m-  assert.equal(inbound.sender.phoneNumber, '966500000000')[m
+[31m-  assert.equal(inbound.sender.lid, '262074710159420@lid')[m
+[31m-  assert.equal(inbound.sender.storageIdentifier, '966500000000')[m
+[32m+[m[32m  assert.equal(first.id, later.id)[m
+[32m+[m[32m  assert.equal(first.phone_number, null)[m
+[32m+[m[32m  assert.equal(later.phone_number, null)[m
+[32m+[m[32m  assert.equal(repository.count(), 1)[m
+[32m+[m[32m})[m
+[32m+[m
+[32m+[m[32mtest('a PN and LID for the same sender resolve to one user and retain the true PN', async () => {[m
+[32m+[m[32m  const repository = new MemoryBotUsersClient()[m
+[32m+[m[32m  const lidOnly = await repository.repository().getOrCreateUser(senderFor('262074710159420@lid'))[m
+[32m+[m[32m  const withLidAndPn = await repository.repository().getOrCreateUser(senderFor('262074710159420@lid', {[m
+[32m+[m[32m    senderPn: '966500000000@s.whatsapp.net',[m
+[32m+[m[32m  }))[m
+[32m+[m
+[32m+[m[32m  assert.equal(lidOnly.id, withLidAndPn.id)[m
+[32m+[m[32m  assert.equal(withLidAndPn.phone_number, '966500000000')[m
+[32m+[m[32m  assert.equal(withLidAndPn.whatsapp_identity, 'lid:262074710159420@lid')[m
+[32m+[m[32m  assert.equal(repository.count(), 1)[m
+[32m+[m[32m})[m
+[32m+[m
+[32m+[m[32mtest('a prior PN-only user is reconciled when its LID and trusted PN arrive together', async () => {[m
+[32m+[m[32m  const repository = new MemoryBotUsersClient()[m
+[32m+[m[32m  const phoneOnly = await repository.repository().getOrCreateUser(senderFor('966500000000@s.whatsapp.net'))[m
+[32m+[m[32m  const withLidAndPn = await repository.repository().getOrCreateUser(senderFor('262074710159420@lid', {[m
+[32m+[m[32m    senderPn: '966500000000@s.whatsapp.net',[m
+[32m+[m[32m  }))[m
+[32m+[m
+[32m+[m[32m  assert.equal(phoneOnly.id, withLidAndPn.id)[m
+[32m+[m[32m  assert.equal(withLidAndPn.phone_number, '966500000000')[m
+[32m+[m[32m  assert.equal(withLidAndPn.whatsapp_identity, 'lid:262074710159420@lid')[m
+[32m+[m[32m  assert.equal(repository.count(), 1)[m
+ })[m
+ [m
+ test('Baileys authentication credentials and Signal keys persist through the encrypted repository contract', async () => {[m
+[1mdiff --git a/supabase/migrations/20260820_003_bot_user_whatsapp_identity.sql b/supabase/migrations/20260820_003_bot_user_whatsapp_identity.sql[m
+[1mnew file mode 100644[m
+[1mindex 0000000..5fae467[m
+[1m--- /dev/null[m
+[1m+++ b/supabase/migrations/20260820_003_bot_user_whatsapp_identity.sql[m
+[36m@@ -0,0 +1,47 @@[m
+[32m+[m[32m-- Separate opaque WhatsApp identities (LID/JID) from true phone numbers.[m
+[32m+[m[32m-- This migration is additive and preserves all existing bot_users rows.[m
+[32m+[m
+[32m+[m[32mbegin;[m
+[32m+[m
+[32m+[m[32malter table public.bot_users[m
+[32m+[m[32m  add column if not exists whatsapp_identity text;[m
+[32m+[m
+[32m+[m[32malter table public.bot_users[m
+[32m+[m[32m  alter column phone_number drop not null;[m
+[32m+[m
+[32m+[m[32m-- LID-derived legacy rows are not real phone numbers. Preserve their WhatsApp[m
+[32m+[m[32m-- identity in the new column and clear only the misused phone_number value.[m
+[32m+[m[32mupdate public.bot_users[m
+[32m+[m[32mset phone_number = null[m
+[32m+[m[32mwhere metadata -> 'whatsapp_identity' ->> 'kind' = 'lid'[m
+[32m+[m[32m  and nullif(metadata -> 'whatsapp_identity' ->> 'phone_number', '') is null;[m
+[32m+[m
+[32m+[m[32m-- Prefer the existing LID/JID metadata when present. Older phone-only rows get[m
+[32m+[m[32m-- a stable legacy identity derived from their existing real phone number.[m
+[32m+[m[32mupdate public.bot_users[m
+[32m+[m[32mset whatsapp_identity = case[m
+[32m+[m[32m  when nullif(metadata -> 'whatsapp_identity' ->> 'lid', '') is not null[m
+[32m+[m[32m    then 'lid:' || (metadata -> 'whatsapp_identity' ->> 'lid')[m
+[32m+[m[32m  when nullif(metadata -> 'whatsapp_identity' ->> 'jid', '') is not null[m
+[32m+[m[32m    then 'jid:' || (metadata -> 'whatsapp_identity' ->> 'jid')[m
+[32m+[m[32m  when phone_number is not null[m
+[32m+[m[32m    then 'legacy:phone:' || phone_number[m
+[32m+[m[32m  else 'legacy:user:' || id::text[m
+[32m+[m[32mend[m
+[32m+[m[32mwhere whatsapp_identity is null;[m
+[32m+[m
+[32m+[m[32malter table public.bot_users[m
+[32m+[m[32m  alter column whatsapp_identity set not null;[m
+[32m+[m
+[32m+[m[32malter table public.bot_users[m
+[32m+[m[32m  drop constraint if exists bot_users_phone_number_check;[m
+[32m+[m
+[32m+[m[32m-- [ + ] avoids ambiguous backslash escaping in standard SQL string literals.[m
+[32m+[m[32malter table public.bot_users[m
+[32m+[m[32m  add constraint bot_users_phone_number_check[m
+[32m+[m[32m  check (phone_number is null or phone_number ~ '^[+]?[0-9]{6,20}$');[m
+[32m+[m
+[32m+[m[32mcreate unique index if not exists bot_users_whatsapp_identity_key[m
+[32m+[m[32m  on public.bot_users (whatsapp_identity);[m
+[32m+[m
+[32m+[m[32mcommit;[m
