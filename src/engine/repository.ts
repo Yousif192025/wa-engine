@@ -1,11 +1,12 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { EngineConfig } from './config'
 import type { KnowledgeContext, MessageDirection, SenderIdentity, StoredMessage } from './types'
-import type { SupportedLanguage } from './utils'
+import { log, type SupportedLanguage } from './utils'
 
 interface UserRecord {
   id: string
-  phone_number: string
+  phone_number: string | null
+  whatsapp_identity: string
   display_name?: string | null
   metadata?: Record<string, unknown> | null
 }
@@ -53,12 +54,9 @@ export class BotRepository {
         phone_number: sender.phoneNumber ?? null,
       },
     }
-    const { data: existing, error: selectError } = await this.client
-      .from('bot_users')
-      .select('id, phone_number, display_name, metadata')
-      .eq('phone_number', sender.storageIdentifier)
-      .maybeSingle()
-    if (selectError) throw new Error(`Unable to find user: ${selectError.message}`)
+    let existing = await this.findUserBy('whatsapp_identity', sender.whatsappIdentity)
+    if (!existing && sender.phoneNumber) existing = await this.findUserBy('phone_number', sender.phoneNumber)
+
     if (existing) {
       const existingMetadata = existing.metadata && typeof existing.metadata === 'object'
         ? existing.metadata as Record<string, unknown>
@@ -68,6 +66,10 @@ export class BotRepository {
         updated_at: new Date().toISOString(),
       }
       if (displayName && displayName !== existing.display_name) updates.display_name = displayName
+      if (sender.phoneNumber && sender.phoneNumber !== existing.phone_number) updates.phone_number = sender.phoneNumber
+      if (sender.kind === 'lid' && sender.whatsappIdentity !== existing.whatsapp_identity) {
+        updates.whatsapp_identity = sender.whatsappIdentity
+      }
       const { error } = await this.client
         .from('bot_users')
         .update(updates)
@@ -76,17 +78,42 @@ export class BotRepository {
       return { ...existing, ...updates } as UserRecord
     }
 
+    const insertPayload = {
+      whatsapp_identity: sender.whatsappIdentity,
+      phone_number: sender.phoneNumber ?? null,
+      display_name: displayName ?? null,
+      metadata,
+    }
+    log('bot_user_insert_payload_debug', {
+      whatsappIdentity: sender.whatsappIdentity ?? null,
+      senderKind: sender.kind,
+      senderJid: sender.jid,
+      senderLid: sender.lid ?? null,
+      phoneNumber: sender.phoneNumber ?? null,
+      insertPayload: {
+        whatsapp_identity: insertPayload.whatsapp_identity ?? null,
+        phone_number: insertPayload.phone_number,
+        display_name: insertPayload.display_name ? '[present]' : null,
+        metadata: '[omitted]',
+      },
+    })
     const { data, error } = await this.client
       .from('bot_users')
-      .insert({
-        phone_number: sender.storageIdentifier,
-        display_name: displayName ?? null,
-        metadata,
-      })
-      .select('id, phone_number, display_name, metadata')
+      .insert(insertPayload)
+      .select('id, phone_number, whatsapp_identity, display_name, metadata')
       .single()
     if (error) throw new Error(`Unable to create user: ${error.message}`)
     return data as UserRecord
+  }
+
+  private async findUserBy(column: 'whatsapp_identity' | 'phone_number', value: string): Promise<UserRecord | null> {
+    const { data, error } = await this.client
+      .from('bot_users')
+      .select('id, phone_number, whatsapp_identity, display_name, metadata')
+      .eq(column, value)
+      .maybeSingle()
+    if (error) throw new Error(`Unable to find user: ${error.message}`)
+    return (data as UserRecord | null) ?? null
   }
 
   async findConversation(externalChatId: string): Promise<ConversationRecord | null> {
@@ -195,8 +222,7 @@ export class BotRepository {
       .eq('is_active', true)
       .textSearch('search_vector', safeQuery, { config: 'simple', type: 'websearch' })
       .limit(limit)
-
     if (error) throw new Error(`Unable to search knowledge base: ${error.message}`)
-    return (data ?? []).map((item, index) => ({ ...item, score: limit - index })) as KnowledgeContext[]
+    return ((data ?? []) as KnowledgeContext[]).map((item, index) => ({ ...item, score: limit - index }))
   }
 }
