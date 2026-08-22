@@ -1,0 +1,97 @@
+[1mdiff --git a/src/engine/repository.ts b/src/engine/repository.ts[m
+[1mindex 4a066cd..fc7ed8b 100644[m
+[1m--- a/src/engine/repository.ts[m
+[1m+++ b/src/engine/repository.ts[m
+[36m@@ -1,11 +1,12 @@[m
+ import { createClient, type SupabaseClient } from '@supabase/supabase-js'[m
+ import type { EngineConfig } from './config'[m
+ import type { KnowledgeContext, MessageDirection, SenderIdentity, StoredMessage } from './types'[m
+[31m-import type { SupportedLanguage } from './utils'[m
+[32m+[m[32mimport { log, type SupportedLanguage } from './utils'[m
+ [m
+ interface UserRecord {[m
+   id: string[m
+[31m-  phone_number: string[m
+[32m+[m[32m  phone_number: string | null[m
+[32m+[m[32m  whatsapp_identity: string[m
+   display_name?: string | null[m
+   metadata?: Record<string, unknown> | null[m
+ }[m
+[36m@@ -53,12 +54,9 @@[m [mexport class BotRepository {[m
+         phone_number: sender.phoneNumber ?? null,[m
+       },[m
+     }[m
+[31m-    const { data: existing, error: selectError } = await this.client[m
+[31m-      .from('bot_users')[m
+[31m-      .select('id, phone_number, display_name, metadata')[m
+[31m-      .eq('phone_number', sender.storageIdentifier)[m
+[31m-      .maybeSingle()[m
+[31m-    if (selectError) throw new Error(`Unable to find user: ${selectError.message}`)[m
+[32m+[m[32m    let existing = await this.findUserBy('whatsapp_identity', sender.whatsappIdentity)[m
+[32m+[m[32m    if (!existing && sender.phoneNumber) existing = await this.findUserBy('phone_number', sender.phoneNumber)[m
+[32m+[m
+     if (existing) {[m
+       const existingMetadata = existing.metadata && typeof existing.metadata === 'object'[m
+         ? existing.metadata as Record<string, unknown>[m
+[36m@@ -68,6 +66,10 @@[m [mexport class BotRepository {[m
+         updated_at: new Date().toISOString(),[m
+       }[m
+       if (displayName && displayName !== existing.display_name) updates.display_name = displayName[m
+[32m+[m[32m      if (sender.phoneNumber && sender.phoneNumber !== existing.phone_number) updates.phone_number = sender.phoneNumber[m
+[32m+[m[32m      if (sender.kind === 'lid' && sender.whatsappIdentity !== existing.whatsapp_identity) {[m
+[32m+[m[32m        updates.whatsapp_identity = sender.whatsappIdentity[m
+[32m+[m[32m      }[m
+       const { error } = await this.client[m
+         .from('bot_users')[m
+         .update(updates)[m
+[36m@@ -76,19 +78,44 @@[m [mexport class BotRepository {[m
+       return { ...existing, ...updates } as UserRecord[m
+     }[m
+ [m
+[32m+[m[32m    const insertPayload = {[m
+[32m+[m[32m      whatsapp_identity: sender.whatsappIdentity,[m
+[32m+[m[32m      phone_number: sender.phoneNumber ?? null,[m
+[32m+[m[32m      display_name: displayName ?? null,[m
+[32m+[m[32m      metadata,[m
+[32m+[m[32m    }[m
+[32m+[m[32m    log('bot_user_insert_payload_debug', {[m
+[32m+[m[32m      whatsappIdentity: sender.whatsappIdentity ?? null,[m
+[32m+[m[32m      senderKind: sender.kind,[m
+[32m+[m[32m      senderJid: sender.jid,[m
+[32m+[m[32m      senderLid: sender.lid ?? null,[m
+[32m+[m[32m      phoneNumber: sender.phoneNumber ?? null,[m
+[32m+[m[32m      insertPayload: {[m
+[32m+[m[32m        whatsapp_identity: insertPayload.whatsapp_identity ?? null,[m
+[32m+[m[32m        phone_number: insertPayload.phone_number,[m
+[32m+[m[32m        display_name: insertPayload.display_name ? '[present]' : null,[m
+[32m+[m[32m        metadata: '[omitted]',[m
+[32m+[m[32m      },[m
+[32m+[m[32m    })[m
+     const { data, error } = await this.client[m
+       .from('bot_users')[m
+[31m-      .insert({[m
+[31m-        phone_number: sender.storageIdentifier,[m
+[31m-        display_name: displayName ?? null,[m
+[31m-        metadata,[m
+[31m-      })[m
+[31m-      .select('id, phone_number, display_name, metadata')[m
+[32m+[m[32m      .insert(insertPayload)[m
+[32m+[m[32m      .select('id, phone_number, whatsapp_identity, display_name, metadata')[m
+       .single()[m
+     if (error) throw new Error(`Unable to create user: ${error.message}`)[m
+     return data as UserRecord[m
+   }[m
+ [m
+[32m+[m[32m  private async findUserBy(column: 'whatsapp_identity' | 'phone_number', value: string): Promise<UserRecord | null> {[m
+[32m+[m[32m    const { data, error } = await this.client[m
+[32m+[m[32m      .from('bot_users')[m
+[32m+[m[32m      .select('id, phone_number, whatsapp_identity, display_name, metadata')[m
+[32m+[m[32m      .eq(column, value)[m
+[32m+[m[32m      .maybeSingle()[m
+[32m+[m[32m    if (error) throw new Error(`Unable to find user: ${error.message}`)[m
+[32m+[m[32m    return (data as UserRecord | null) ?? null[m
+[32m+[m[32m  }[m
+[32m+[m
+   async findConversation(externalChatId: string): Promise<ConversationRecord | null> {[m
+     const { data, error } = await this.client[m
+       .from('conversations')[m
