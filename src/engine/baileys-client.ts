@@ -249,11 +249,22 @@ export class BaileysClient implements BaileysTransport {
      * 2. A phone number is configured
      * 3. There are no existing WhatsApp credentials
      */
-    const shouldUsePairingCode: boolean =
-      this.config.baileysUsePairingCode === true &&
-      typeof this.config.baileysPhoneNumber === 'string' &&
-      this.config.baileysPhoneNumber.length > 0 &&
-      !hasExistingCreds
+    const hasExistingCreds = auth.creds.me?.id !== undefined
+
+const shouldUsePairingCode: boolean =
+  this.config.baileysUsePairingCode === true &&
+  typeof this.config.baileysPhoneNumber === 'string' &&
+  this.config.baileysPhoneNumber.length > 0 &&
+  !hasExistingCreds
+
+const socket = makeWASocket({
+  auth,
+  browser: Browsers.ubuntu('wa-engine'),
+  logger: silentBaileysLogger,
+  markOnlineOnConnect: false,
+  syncFullHistory: false,
+  shouldSyncHistoryMessage: () => false,
+})
 
     const socket = makeWASocket({
       auth,
