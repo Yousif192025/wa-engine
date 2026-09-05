@@ -1,4 +1,3 @@
-```ts
 import {
   Browsers,
   DisconnectReason,
@@ -68,6 +67,7 @@ export class BaileysClient implements BaileysTransport {
   private stopped = false
   private connectionStatus: WhatsAppConnectionStatus = 'disconnected'
   private connectedJid: string | undefined
+  private pairingCodeRequested = false
 
   constructor(
     private readonly config: EngineConfig,
@@ -153,7 +153,17 @@ export class BaileysClient implements BaileysTransport {
     await this.sessionRepository.saveConnectionState({ status: 'connecting' })
     log('whatsapp_connecting')
 
-    const auth = await this.authState.load()
+    let auth
+    try {
+      auth = await this.authState.load()
+    } catch (error) {
+      logError('whatsapp_auth_state_load_failed', error)
+      throw new Error(`Failed to load WhatsApp auth state: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
+
+    const hasExistingCreds = auth.creds.me?.id !== undefined
+    const shouldUsePairingCode = this.config.baileysUsePairingCode && this.config.baileysPhoneNumber && !hasExistingCreds
+
     const socket = makeWASocket({
       auth,
       browser: Browsers.ubuntu('wa-engine'),
@@ -169,7 +179,7 @@ export class BaileysClient implements BaileysTransport {
     })
 
     socket.ev.on('connection.update', (update) => {
-      void this.handleConnectionUpdate(socket, update)
+      void this.handleConnectionUpdate(socket, update, shouldUsePairingCode)
     })
 
     socket.ev.on('messages.upsert', ({ type, messages }) => {
@@ -188,17 +198,45 @@ export class BaileysClient implements BaileysTransport {
     })
   }
 
-  private async handleConnectionUpdate(socket: WASocket, update: {
-    connection?: 'connecting' | 'open' | 'close'
-    lastDisconnect?: { error?: Error }
-    qr?: string
-  }): Promise<void> {
+  private async handleConnectionUpdate(
+    socket: WASocket,
+    update: {
+      connection?: 'connecting' | 'open' | 'close'
+      lastDisconnect?: { error?: Error }
+      qr?: string
+    },
+    shouldUsePairingCode: boolean,
+  ): Promise<void> {
     if (socket !== this.socket) {
       log('whatsapp_stale_connection_update_ignored', { connection: update.connection ?? 'unknown' })
       return
     }
 
-    if (update.qr) {
+    // Handle pairing code request for fresh sessions
+    if (shouldUsePairingCode && !this.pairingCodeRequested) {
+      this.pairingCodeRequested = true
+      try {
+        log('whatsapp_pairing_code_requested', { phoneNumber: '[redacted]' })
+        const pairingCode = await socket.requestPairingCode(this.config.baileysPhoneNumber!)
+        log('whatsapp_pairing_code_generated')
+        process.stdout.write('\n')
+        process.stdout.write('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
+        process.stdout.write('WhatsApp Pairing Code\n')
+        process.stdout.write(`${pairingCode}\n`)
+        process.stdout.write('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
+        process.stdout.write('\n')
+        process.stdout.write('Open WhatsApp on your phone:\n')
+        process.stdout.write('  Linked Devices → Link a Device → Link with phone number instead\n')
+        process.stdout.write('Enter the code above on your phone.\n')
+        process.stdout.write('\n')
+      } catch (error) {
+        logError('whatsapp_pairing_code_failed', error)
+        this.pairingCodeRequested = false
+      }
+    }
+
+    // Handle QR code as fallback when pairing code is not enabled or failed
+    if (update.qr && !shouldUsePairingCode) {
       this.connectionStatus = 'qr_pending'
       await this.sessionRepository.saveConnectionState({ status: 'qr_pending', qrGenerated: true })
       log('whatsapp_qr_generated')
@@ -218,7 +256,7 @@ export class BaileysClient implements BaileysTransport {
         connected: true,
         connectedJid: this.connectedJid,
       })
-      log('whatsapp_connected', { jid: this.connectedJid })
+      log('whatsapp_authenticated', { jid: this.connectedJid })
       return
     }
 
@@ -228,6 +266,7 @@ export class BaileysClient implements BaileysTransport {
     const errorMessage = safeDisconnectMessage(update.lastDisconnect?.error)
     this.socket = undefined
     this.connectedJid = undefined
+    this.pairingCodeRequested = false
 
     if (loggedOut) {
       this.connectionStatus = 'logged_out'
@@ -290,4 +329,3 @@ export class BaileysClient implements BaileysTransport {
     return this.socket
   }
 }
-```
