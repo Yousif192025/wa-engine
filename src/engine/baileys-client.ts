@@ -251,6 +251,8 @@ export class BaileysClient implements BaileysTransport {
      */
     const hasExistingCreds = auth.creds.me?.id !== undefined
 
+const hasExistingCreds = auth.creds.me?.id !== undefined
+
 const shouldUsePairingCode: boolean =
   this.config.baileysUsePairingCode === true &&
   typeof this.config.baileysPhoneNumber === 'string' &&
