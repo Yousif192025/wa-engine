@@ -54,7 +54,7 @@ export class BotRepository {
         phone_number: sender.phoneNumber ?? null,
       },
     }
-    let existing = await this.findUserBy('whatsapp_identity', sender.whatsappIdentity)
+    let existing = await this.findUserBy('whatsapp_identity', sender.storageIdentifier)
     if (!existing && sender.phoneNumber) existing = await this.findUserBy('phone_number', sender.phoneNumber)
 
     if (existing) {
@@ -67,8 +67,8 @@ export class BotRepository {
       }
       if (displayName && displayName !== existing.display_name) updates.display_name = displayName
       if (sender.phoneNumber && sender.phoneNumber !== existing.phone_number) updates.phone_number = sender.phoneNumber
-      if (sender.kind === 'lid' && sender.whatsappIdentity !== existing.whatsapp_identity) {
-        updates.whatsapp_identity = sender.whatsappIdentity
+      if (sender.kind === 'lid' && sender.storageIdentifier !== existing.whatsapp_identity) {
+        updates.whatsapp_identity = sender.storageIdentifier
       }
       const { error } = await this.client
         .from('bot_users')
@@ -79,13 +79,13 @@ export class BotRepository {
     }
 
     const insertPayload = {
-      whatsapp_identity: sender.whatsappIdentity,
+      whatsapp_identity: sender.storageIdentifier,
       phone_number: sender.phoneNumber ?? null,
       display_name: displayName ?? null,
       metadata,
     }
     log('bot_user_insert_payload_debug', {
-      whatsappIdentity: sender.whatsappIdentity ?? null,
+      storageIdentifier: sender.storageIdentifier ?? null,
       senderKind: sender.kind,
       senderJid: sender.jid,
       senderLid: sender.lid ?? null,
