@@ -162,7 +162,9 @@ export class BaileysClient implements BaileysTransport {
     }
 
     const hasExistingCreds = auth.creds.me?.id !== undefined
-    const shouldUsePairingCode = this.config.baileysUsePairingCode && this.config.baileysPhoneNumber && !hasExistingCreds
+    const shouldUsePairingCode: boolean = Boolean(
+      this.config.baileysUsePairingCode && this.config.baileysPhoneNumber && !hasExistingCreds,
+    )
 
     const socket = makeWASocket({
       auth,
