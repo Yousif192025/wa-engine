@@ -7,6 +7,12 @@ const booleanFromEnvironment = z
 const positiveInteger = (defaultValue: number, maximum: number) =>
   z.coerce.number().int().positive().max(maximum).default(defaultValue)
 
+const e164PhoneNumber = z
+  .string()
+  .trim()
+  .regex(/^\+?[1-9]\d{1,14}$/, 'Must be a valid E.164 phone number')
+  .optional()
+
 const configSchema = z.object({
   nodeEnv: z.enum(['development', 'test', 'production']).default('development'),
   port: z.coerce.number().int().min(1).max(65535).default(8080),
@@ -27,6 +33,10 @@ const configSchema = z.object({
   baileysAccountId: z.string().trim().regex(/^[a-zA-Z0-9_-]{1,80}$/).default('default'),
   baileysAuthEncryptionKey: z.string().trim().min(1, 'BAILEYS_AUTH_ENCRYPTION_KEY is required'),
   baileysReconnectDelayMs: positiveInteger(5000, 60000),
+  baileysProxyAddress: z.string().trim().optional(),
+  baileysForceRefreshQr: booleanFromEnvironment.default(false),
+  baileysUsePairingCode: booleanFromEnvironment.default(false),
+  baileysPhoneNumber: e164PhoneNumber,
   fallbackMessageAr: z.string().trim().min(1).default('عذرًا، أواجه مشكلة مؤقتة في خدمة الرد الذكي. يرجى المحاولة مرة أخرى لاحقًا.'),
   fallbackMessageEn: z.string().trim().min(1).default('Sorry, I am having a temporary issue with the support service. Please try again later.'),
 })
@@ -54,6 +64,10 @@ export function readEngineConfig(environment: NodeJS.ProcessEnv = process.env): 
     baileysAccountId: environment.BAILEYS_ACCOUNT_ID,
     baileysAuthEncryptionKey: environment.BAILEYS_AUTH_ENCRYPTION_KEY,
     baileysReconnectDelayMs: environment.BAILEYS_RECONNECT_DELAY_MS,
+    baileysProxyAddress: environment.BAILEYS_PROXY_ADDRESS,
+    baileysForceRefreshQr: environment.BAILEYS_FORCE_REFRESH_QR,
+    baileysUsePairingCode: environment.BAILEYS_USE_PAIRING_CODE,
+    baileysPhoneNumber: environment.BAILEYS_PHONE_NUMBER,
     fallbackMessageAr: environment.FALLBACK_MESSAGE_AR,
     fallbackMessageEn: environment.FALLBACK_MESSAGE_EN,
   })
